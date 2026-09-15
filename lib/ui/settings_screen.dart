@@ -65,7 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (on) {
       final ok = await _confirm(
         'Turn on AI descriptions?',
-        'To describe a photo, a small copy of it (about 512 pixels) is sent unencrypted to an AI '
+        'To describe a photo, a small preview of it (about 400 pixels) is sent unencrypted to an AI '
             'service through Hugging Face. This is the one exception to "only you can see your photos". '
             'Descriptions are then stored encrypted.\n\n'
             'It uses your Hugging Face credits. Free accounts get about \$0.10 a month, enough for a '
@@ -78,7 +78,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (token == null) return;
       }
     }
-    _update(() => _settings.aiCaptions = on);
+    _update(() {
+      _settings.aiCaptions = on;
+      if (on) {
+        _settings.aiEnabledAt ??= DateTime.now();
+        _settings.aiPausedReason = null;
+      }
+    });
   }
 
   Future<void> _toggleWeather(bool on) async {
@@ -148,6 +154,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return null;
     }
     await _session.credentials.saveHfToken(token);
+    _settings.aiPausedReason = null;
+    _session.settingsChanged();
     if (mounted) setState(() => _hfToken = token);
     return token;
   }
@@ -179,7 +187,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     controller.dispose();
-    if (model != null) _update(() => _settings.aiModel = model);
+    if (model != null) {
+      _update(() {
+        _settings.aiModel = model;
+        _settings.aiPausedReason = null;
+      });
+    }
   }
 
   Future<void> _signOut() async {
@@ -297,6 +310,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: _toggleAi,
           ),
           if (_settings.aiCaptions) ...[
+            if (_settings.aiPausedReason != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(72, 0, 16, 8),
+                child: Material(
+                  color: theme.colorScheme.errorContainer,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text('Paused: ${_settings.aiPausedReason}'),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              _update(() => _settings.aiPausedReason = null),
+                          child: const Text('Resume'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ListTile(
+              contentPadding: const EdgeInsets.only(left: 72, right: 16),
+              title: const Text('This month'),
+              subtitle: Text(
+                '${_settings.aiUsedThisMonth(DateTime.now())} photos described · '
+                '${_settings.aiUsedToday(DateTime.now())} today',
+              ),
+            ),
             ListTile(
               contentPadding: const EdgeInsets.only(left: 72, right: 16),
               title: const Text('Hugging Face token'),

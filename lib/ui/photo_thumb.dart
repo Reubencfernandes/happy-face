@@ -26,7 +26,11 @@ class _LocalThumbs {
           }
           return bytes;
         })
-        .whenComplete(() => _pending.remove(id));
+        .whenComplete(() {
+          // A block body: returning the removed future would make this
+          // future wait on itself.
+          _pending.remove(id);
+        });
   }
 }
 

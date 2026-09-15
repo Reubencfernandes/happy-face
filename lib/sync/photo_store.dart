@@ -33,9 +33,11 @@ class PhotoStore {
       _memory[photoId] = cached; // mark as recently used
       return Future.value(cached);
     }
-    return _inFlight[photoId] ??= _loadThumbnail(
-      photoId,
-    ).whenComplete(() => _inFlight.remove(photoId));
+    return _inFlight[photoId] ??= _loadThumbnail(photoId).whenComplete(() {
+      // A block body: returning the removed future would make this
+      // future wait on itself.
+      _inFlight.remove(photoId);
+    });
   }
 
   Uint8List? cachedThumbnail(String photoId) => _memory[photoId];

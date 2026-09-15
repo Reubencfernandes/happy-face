@@ -454,12 +454,22 @@ class LocalDb {
     [photoId, kind.name, notBefore?.millisecondsSinceEpoch ?? 0],
   );
 
-  List<Job> dueJobs(JobKind kind, DateTime now, {int limit = 20}) => [
+  List<Job> dueJobs(
+    JobKind kind,
+    DateTime now, {
+    int limit = 20,
+    DateTime? uploadedSince,
+  }) => [
     for (final r in db.select(
       'SELECT j.photo_id, j.attempts FROM jobs j JOIN photos p ON p.id = j.photo_id '
-      'WHERE j.kind = ? AND j.done = 0 AND j.not_before <= ? '
+      'WHERE j.kind = ? AND j.done = 0 AND j.not_before <= ? AND p.uploaded_at >= ? '
       'ORDER BY p.taken_at DESC LIMIT ?',
-      [kind.name, now.millisecondsSinceEpoch, limit],
+      [
+        kind.name,
+        now.millisecondsSinceEpoch,
+        uploadedSince?.millisecondsSinceEpoch ?? 0,
+        limit,
+      ],
     ))
       Job(r['photo_id'] as String, kind, r['attempts'] as int),
   ];
