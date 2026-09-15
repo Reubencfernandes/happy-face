@@ -53,8 +53,9 @@ class SigV4Signer {
     final date = amzDate.substring(0, 8);
 
     final names = all.keys.toList()..sort();
-    final canonicalHeaders =
-        names.map((n) => '$n:${_trimHeader(all[n]!)}\n').join();
+    final canonicalHeaders = names
+        .map((n) => '$n:${_trimHeader(all[n]!)}\n')
+        .join();
     final signedHeaders = names.join(';');
     final canonicalRequest = [
       method.toUpperCase(),
@@ -132,7 +133,8 @@ class SigV4Signer {
   }
 
   static String _hostHeader(Uri uri) {
-    final defaultPort = (uri.scheme == 'https' && uri.port == 443) ||
+    final defaultPort =
+        (uri.scheme == 'https' && uri.port == 443) ||
         (uri.scheme == 'http' && uri.port == 80);
     return uri.hasPort && !defaultPort ? '${uri.host}:${uri.port}' : uri.host;
   }

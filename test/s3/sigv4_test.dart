@@ -61,7 +61,9 @@ void main() {
       final hash = sha256Hex(utf8.encode('Welcome to Amazon S3.'));
       final h = signer.sign(
         method: 'PUT',
-        uri: Uri.parse(r'https://examplebucket.s3.amazonaws.com/test$file.text'),
+        uri: Uri.parse(
+          r'https://examplebucket.s3.amazonaws.com/test$file.text',
+        ),
         headers: {
           'date': 'Fri, 24 May 2013 00:00:00 GMT',
           'x-amz-storage-class': 'REDUCED_REDUNDANCY',
