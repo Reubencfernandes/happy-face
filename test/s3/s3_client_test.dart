@@ -138,8 +138,9 @@ void main() {
       final sleeps = <Duration>[];
       final c = clientWith((r) async {
         calls++;
-        if (calls == 1)
+        if (calls == 1) {
           return http.Response('', 429, headers: {'retry-after': '2'});
+        }
         if (calls == 2) return http.Response('', 503);
         if (calls == 3) throw const SocketException('offline');
         return http.Response('', 200);
