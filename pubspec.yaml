@@ -38,6 +38,15 @@ dependencies:
   crypto: ^3.0.7
   file_picker: ^13.0.0
   flutter_secure_storage: ^11.1.1
+  cryptography: ^2.9.0
+  cryptography_flutter: ^2.3.4
+  photo_manager: ^3.12.0
+  flutter_image_compress: ^2.5.1
+  sqlite3: ^3.5.2
+  path_provider: ^2.1.6
+  workmanager: ^0.10.10
+  exif: ^3.3.0
+  xml: ^7.0.1
 
 dev_dependencies:
   flutter_test:
