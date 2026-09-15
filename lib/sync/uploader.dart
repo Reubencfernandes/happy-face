@@ -241,8 +241,9 @@ class Uploader {
             UploadResult(source, UploadOutcome.failed, error: e.friendly),
           );
         } catch (e) {
-          if (source.assetId != null)
+          if (source.assetId != null) {
             db.markAssetFailed(source.assetId!, _describe(e));
+          }
           finish(
             index,
             UploadResult(source, UploadOutcome.failed, error: _describe(e)),

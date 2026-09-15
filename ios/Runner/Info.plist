@@ -6,6 +6,10 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Happy Drive shows the photos on this phone and backs up the ones you choose, encrypted, to your own Hugging Face storage.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Happy Drive saves photos from your storage back to this phone when you ask it to.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Happy Drive</string>
 	<key>CFBundleExecutable</key>

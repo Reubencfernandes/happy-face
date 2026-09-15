@@ -1,5 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.INTERNET"/><application android:allowBackup="false"
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Photos on the phone (Android 13+ and older versions). -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <!-- Without this, Android 10+ strips GPS from photos before apps see them. -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>
+    <!-- Saving photos back to the gallery on Android 9 and older. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+    <application android:allowBackup="false"
         android:label="Happy Drive"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

@@ -213,6 +213,10 @@ class LocalDb {
   bool hasPhoto(String id) =>
       db.select('SELECT 1 FROM photos WHERE id = ?', [id]).isNotEmpty;
 
+  Set<String> allPhotoIds() => {
+    for (final r in db.select('SELECT id FROM photos')) r['id'] as String,
+  };
+
   int get photoCount =>
       db.select('SELECT COUNT(*) AS n FROM photos').first['n'] as int;
 

@@ -140,8 +140,9 @@ int? parseExifOffset(String? value) {
 double? gpsToDecimal(List<dynamic>? dms, String? ref) {
   if (dms == null || dms.length < 3 || ref == null) return null;
   double part(dynamic v) {
-    if (v is Ratio)
+    if (v is Ratio) {
       return v.denominator == 0 ? double.nan : v.numerator / v.denominator;
+    }
     if (v is num) return v.toDouble();
     return double.nan;
   }

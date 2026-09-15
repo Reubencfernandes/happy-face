@@ -15,13 +15,16 @@ class FakeBucket {
   /// Called before each request; return a response to inject a failure.
   http.Response? Function(http.Request request)? intercept;
 
-  FakeBucket({this.pageSize = 1000});
+  /// When true, unsigned requests may list the bucket (a public bucket).
+  bool public;
+
+  FakeBucket({this.pageSize = 1000, this.public = false});
 
   static const _prefix = '/reuben/happy-drive';
 
   int count(String method) => log.where((l) => l.startsWith('$method ')).length;
 
-  BucketClient client() => BucketClient(
+  BucketClient client([Object? _]) => BucketClient(
     namespace: 'reuben',
     bucket: 'happy-drive',
     credentials: const S3Credentials('HFAKTEST', 'secret'),
@@ -32,6 +35,9 @@ class FakeBucket {
   Future<http.Response> _handle(http.Request r) async {
     final injected = intercept?.call(r);
     if (injected != null) return injected;
+    if (!r.headers.containsKey('authorization') && !public) {
+      return http.Response('<Error><Code>AccessDenied</Code></Error>', 403);
+    }
     final path = Uri.decodeComponent(r.url.path);
     if (!path.startsWith(_prefix)) return http.Response('', 404);
     final key = path.length > _prefix.length + 1
@@ -40,8 +46,9 @@ class FakeBucket {
     log.add('${r.method} $key');
 
     if (key.isEmpty) {
-      if (r.method == 'HEAD' || r.method == 'PUT')
+      if (r.method == 'HEAD' || r.method == 'PUT') {
         return http.Response('', 200);
+      }
       return _list(r.url.queryParameters);
     }
     switch (r.method) {
