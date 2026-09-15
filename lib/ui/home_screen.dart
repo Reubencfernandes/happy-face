@@ -5,6 +5,7 @@ import 'package:photo_manager/photo_manager.dart';
 import '../app/session.dart';
 import '../data/local_db.dart';
 import '../media/compress.dart';
+import '../enrich/enricher.dart';
 import '../sync/background.dart';
 import '../sync/uploader.dart';
 import 'places_view.dart';
@@ -23,6 +24,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _selection = Selection();
+  late final _enricher = Enricher(widget.session);
   var _tab = 0;
   var _options = const TimelineOptions();
 
@@ -43,6 +45,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _selection.dispose();
+    _enricher.dispose();
     super.dispose();
   }
 
@@ -58,7 +61,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _session.db.backupStats().pending > 0) {
       await _runBackup(() => _session.backUpPending(), quiet: true);
     }
+    _enrich();
   }
+
+  /// Place names, weather and descriptions, in the background.
+  void _enrich() => _enricher.run().catchError((_) {});
 
   void _toast(String text, {SnackBarAction? action}) =>
       ScaffoldMessenger.of(context)
@@ -70,6 +77,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     bool quiet = false,
   }) async {
     final results = await run();
+    _enrich();
     if (!mounted || results.isEmpty) return;
     final uploaded = results
         .where((r) => r.outcome == UploadOutcome.uploaded)

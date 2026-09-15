@@ -8,6 +8,7 @@ import '../app/credentials.dart';
 import '../app/paths.dart';
 import '../app/session.dart';
 import '../crypto/vault.dart';
+import '../enrich/enricher.dart';
 
 const _taskName = 'happy-drive-backup';
 
@@ -47,6 +48,12 @@ Future<void> runBackgroundBackup({
     final access = await session.scanGallery();
     if (!access.hasAccess) return;
     await session.backUpPending(budget: budget);
+    final enricher = Enricher(session);
+    try {
+      await enricher.run();
+    } finally {
+      enricher.dispose();
+    }
   } finally {
     session.dispose();
   }

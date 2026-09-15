@@ -365,9 +365,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: _signOut,
           ),
           const SizedBox(height: 24),
-          Center(
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Text(
-              'Happy Drive · photos are encrypted on this phone',
+              'Happy Drive · photos are encrypted on this phone\n'
+              'Place names from GeoNames (CC BY 4.0) · '
+              'Weather data by Open-Meteo.com (CC BY 4.0)',
+              textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),

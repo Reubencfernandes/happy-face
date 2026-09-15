@@ -346,13 +346,16 @@ class Session extends ChangeNotifier {
     }
   }
 
-  /// Applies an enrichment patch (place, weather, caption) to one photo.
-  Future<void> patchPhoto(String id, Map<String, dynamic> fields) async {
+  /// Records enrichment (place, weather, caption) for many photos in one
+  /// catalogue entry. Photos deleted in the meantime are ignored.
+  Future<void> patchPhotos(Map<String, Map<String, dynamic>> patches) async {
+    if (patches.isEmpty) return;
+    final at = DateTime.now().toUtc().millisecondsSinceEpoch;
     final changed = await catalogue.commit([
-      PatchOp(id, fields, DateTime.now().toUtc().millisecondsSinceEpoch),
+      for (final e in patches.entries) PatchOp(e.key, e.value, at),
     ]);
     db.syncFrom(catalogue.state, changed);
-    _changed();
+    if (changed.isNotEmpty) _changed();
   }
 
   /// Lets widgets trigger a rebuild after changing settings.

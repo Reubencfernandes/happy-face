@@ -131,6 +131,7 @@ class LocalDb {
         kind TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         not_before INTEGER NOT NULL DEFAULT 0,
+        done INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (photo_id, kind)
       );
       CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -456,20 +457,26 @@ class LocalDb {
   List<Job> dueJobs(JobKind kind, DateTime now, {int limit = 20}) => [
     for (final r in db.select(
       'SELECT j.photo_id, j.attempts FROM jobs j JOIN photos p ON p.id = j.photo_id '
-      'WHERE j.kind = ? AND j.not_before <= ? ORDER BY p.taken_at DESC LIMIT ?',
+      'WHERE j.kind = ? AND j.done = 0 AND j.not_before <= ? '
+      'ORDER BY p.taken_at DESC LIMIT ?',
       [kind.name, now.millisecondsSinceEpoch, limit],
     ))
       Job(r['photo_id'] as String, kind, r['attempts'] as int),
   ];
 
+  /// Jobs still to do (including ones waiting to retry).
   int jobCount(JobKind kind) =>
-      db.select('SELECT COUNT(*) AS n FROM jobs WHERE kind = ?', [
-            kind.name,
-          ]).first['n']
+      db.select(
+            'SELECT COUNT(*) AS n FROM jobs j JOIN photos p ON p.id = j.photo_id '
+            'WHERE j.kind = ? AND j.done = 0',
+            [kind.name],
+          ).first['n']
           as int;
 
+  /// Marks a job finished. It stays recorded so it is never queued again,
+  /// even when it produced nothing (a photo taken at sea has no town).
   void completeJob(String photoId, JobKind kind) => db.execute(
-    'DELETE FROM jobs WHERE photo_id = ? AND kind = ?',
+    'UPDATE jobs SET done = 1 WHERE photo_id = ? AND kind = ?',
     [photoId, kind.name],
   );
 
@@ -479,6 +486,23 @@ class LocalDb {
         'WHERE photo_id = ? AND kind = ?',
         [notBefore.millisecondsSinceEpoch, photoId, kind.name],
       );
+
+  /// Queues enrichment for photos that arrived without it, e.g. ones another
+  /// phone uploaded while it was offline.
+  void enqueueMissingEnrichment() => _tx(() {
+    db.execute(
+      "INSERT OR IGNORE INTO jobs (photo_id, kind) SELECT id, 'place' FROM photos "
+      "WHERE place IS NULL AND json_extract(json, '\$.lat') IS NOT NULL",
+    );
+    db.execute(
+      "INSERT OR IGNORE INTO jobs (photo_id, kind) SELECT id, 'weather' FROM photos "
+      "WHERE json_extract(json, '\$.weather') IS NULL AND json_extract(json, '\$.lat') IS NOT NULL",
+    );
+    db.execute(
+      "INSERT OR IGNORE INTO jobs (photo_id, kind) SELECT id, 'caption' FROM photos "
+      "WHERE json_extract(json, '\$.caption') IS NULL",
+    );
+  });
 
   // -------------------------------------------------------------- settings
 
