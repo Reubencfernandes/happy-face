@@ -74,6 +74,7 @@ class Session extends ChangeNotifier {
   List<UploadResult> lastResults = const [];
   PermissionState? galleryAccess;
   bool _disposed = false;
+  bool _loadedOnce = false;
 
   Session({
     required this.account,
@@ -143,14 +144,14 @@ class Session extends ChangeNotifier {
     syncError = null;
     _notify();
     try {
-      final firstLoad =
-          catalogue.snapshotSeq == 0 && catalogue.state.records.isEmpty;
+      final firstLoad = !_loadedOnce;
       final changed = full || firstLoad
           ? await catalogue.load()
           : await catalogue.refresh();
       final stale = firstLoad || full
           ? db.allPhotoIds().difference(catalogue.state.records.keys.toSet())
           : <String>{};
+      _loadedOnce = true;
       if (changed.isNotEmpty || stale.isNotEmpty) {
         db.syncFrom(catalogue.state, {...changed, ...stale});
         _changed();
@@ -192,62 +193,138 @@ class Session extends ChangeNotifier {
     }
   }
 
+  /// Uploads files the user picked (for example from Files or Downloads).
   Future<List<UploadResult>> backUp(
     List<UploadSource> sources, {
     Compression? compression,
+  }) => _runBackup(
+    total: sources.length,
+    compression: compression,
+    nextBatch: (done) async => done == 0 ? sources : null,
+  );
+
+  /// Backs up gallery photos by id, e.g. a multi-selection in the timeline.
+  ///
+  /// Photos are prepared in batches of [batchSize], so uploading starts
+  /// straight away even when thousands are waiting. With a [budget], stops
+  /// starting new batches once that much time has passed.
+  Future<List<UploadResult>> backUpAssets(
+    List<String> assetIds, {
+    Compression? compression,
+    Duration? budget,
+    int batchSize = 50,
+  }) {
+    var next = 0;
+    return _runBackup(
+      total: assetIds.length,
+      compression: compression,
+      budget: budget,
+      nextBatch: (_) async {
+        while (next < assetIds.length) {
+          final ids = assetIds.skip(next).take(batchSize).toList();
+          next += ids.length;
+          final sources = <UploadSource>[];
+          for (final id in ids) {
+            final source = await gallery.sourceFor(id);
+            if (source != null) sources.add(source);
+          }
+          // Photos deleted from the phone since the last scan are skipped.
+          _missing += ids.length - sources.length;
+          if (sources.isNotEmpty) return sources;
+        }
+        return null;
+      },
+    );
+  }
+
+  /// Everything on the phone that isn't backed up yet, newest first.
+  Future<List<UploadResult>> backUpPending({
+    Compression? compression,
+    Duration? budget,
+  }) => backUpAssets(
+    db.pendingAssets(limit: 1 << 30),
+    compression: compression,
+    budget: budget,
+  );
+
+  /// Stops after the photos currently uploading.
+  void cancelUpload() {
+    _stopRequested = true;
+    _uploader.cancel();
+  }
+
+  bool _stopRequested = false;
+  int _missing = 0;
+
+  Future<List<UploadResult>> _runBackup({
+    required int total,
+    required Future<List<UploadSource>?> Function(int completed) nextBatch,
+    Compression? compression,
+    Duration? budget,
   }) async {
-    if (uploading || sources.isEmpty) return const [];
-    upload = UploadProgress(
-      total: sources.length,
+    if (uploading || total == 0) return const [];
+    _stopRequested = false;
+    _missing = 0;
+    final started = DateTime.now();
+    final results = <UploadResult>[];
+    var base = UploadProgress(
+      total: total,
       completed: 0,
       uploaded: 0,
       skipped: 0,
       failed: 0,
     );
+    upload = base;
     _notify();
     try {
-      final results = await _uploader.run(
-        sources,
-        compression: compression ?? settings.compression,
-        onProgress: (p) {
-          upload = p;
-          if (p.completed % 5 == 0 || p.done) _changed();
-        },
-      );
+      // The first batch always runs, so every pass makes some progress.
+      while (!_stopRequested &&
+          (budget == null ||
+              results.isEmpty ||
+              DateTime.now().difference(started) < budget)) {
+        final batch = await nextBatch(results.length);
+        if (batch == null) break;
+        final offset = base;
+        final missing = _missing;
+        final batchResults = await _uploader.run(
+          batch,
+          compression: compression ?? settings.compression,
+          onProgress: (p) {
+            upload = base = UploadProgress(
+              total: total,
+              completed: offset.completed + missing + p.completed,
+              uploaded: offset.uploaded + p.uploaded,
+              skipped: offset.skipped + missing + p.skipped,
+              failed: offset.failed + p.failed,
+            );
+            if (p.completed % 5 == 0 || p.done) _changed();
+          },
+        );
+        _missing = 0;
+        results.addAll(batchResults);
+        // If the keys stopped working, don't grind through every photo.
+        final authFailed =
+            batchResults.isNotEmpty &&
+            batchResults.every((r) => r.outcome == UploadOutcome.failed) &&
+            batchResults.any(
+              (r) => (r.error ?? '').startsWith('Access denied'),
+            );
+        if (authFailed) break;
+      }
       lastResults = results;
       return results;
     } finally {
-      upload = upload == null
-          ? null
-          : UploadProgress(
-              total: upload!.total,
-              completed: upload!.total,
-              uploaded: upload!.uploaded,
-              skipped: upload!.skipped,
-              failed: upload!.failed,
-            );
+      // Mark the run finished even if it stopped early.
+      upload = UploadProgress(
+        total: base.completed,
+        completed: base.completed,
+        uploaded: base.uploaded,
+        skipped: base.skipped,
+        failed: base.failed,
+      );
       _changed();
     }
   }
-
-  /// Backs up gallery photos by id, e.g. a multi-selection in the timeline.
-  Future<List<UploadResult>> backUpAssets(
-    Iterable<String> assetIds, {
-    Compression? compression,
-  }) async {
-    final sources = <UploadSource>[];
-    for (final id in assetIds) {
-      final s = await gallery.sourceFor(id);
-      if (s != null) sources.add(s);
-    }
-    return backUp(sources, compression: compression);
-  }
-
-  /// Everything on the phone that isn't backed up yet.
-  Future<List<UploadResult>> backUpPending({Compression? compression}) =>
-      backUpAssets(db.pendingAssets(limit: 100000), compression: compression);
-
-  void cancelUpload() => _uploader.cancel();
 
   /// Deletes photos from the bucket. Copies on the phone are untouched.
   Future<void> deletePhotos(Set<String> ids) async {

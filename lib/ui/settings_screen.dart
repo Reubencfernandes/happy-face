@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app/session.dart';
 import '../data/local_db.dart';
 import '../media/compress.dart';
+import '../sync/background.dart';
 
 class SettingsScreen extends StatefulWidget {
   final Session session;
@@ -34,6 +35,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(change);
     _session.settingsChanged();
   }
+
+  Future<void> _reschedule() => BackgroundBackup.configure(
+    enabled: _settings.autoBackup,
+    wifiOnly: _settings.wifiOnly,
+  ).catchError((_) {});
 
   Future<bool> _confirm(String title, String body, String action) async =>
       await showDialog<bool>(
@@ -257,14 +263,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               'iPhone decides when background work is allowed, so opening the app is the reliable way.',
             ),
             value: _settings.autoBackup,
-            onChanged: (v) => _update(() => _settings.autoBackup = v),
+            onChanged: (v) {
+              _update(() => _settings.autoBackup = v);
+              _reschedule();
+            },
           ),
           SwitchListTile(
             secondary: const Icon(Icons.wifi),
             title: const Text('Background backup on Wi-Fi only'),
             value: _settings.wifiOnly,
             onChanged: _settings.autoBackup
-                ? (v) => _update(() => _settings.wifiOnly = v)
+                ? (v) {
+                    _update(() => _settings.wifiOnly = v);
+                    _reschedule();
+                  }
                 : null,
           ),
           header('Extras'),

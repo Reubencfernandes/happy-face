@@ -85,6 +85,8 @@ class LocalDb {
   final Database db;
 
   LocalDb._(this.db) {
+    // The background backup task may hold the database briefly.
+    db.execute('PRAGMA busy_timeout = 5000');
     _migrate();
   }
 

@@ -5,6 +5,7 @@ import 'package:photo_manager/photo_manager.dart';
 import '../app/session.dart';
 import '../data/local_db.dart';
 import '../media/compress.dart';
+import '../sync/background.dart';
 import '../sync/uploader.dart';
 import 'places_view.dart';
 import 'search_view.dart';
@@ -31,6 +32,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    BackgroundBackup.configure(
+      enabled: _session.settings.autoBackup,
+      wifiOnly: _session.settings.wifiOnly,
+    ).catchError((_) {});
     _refresh();
   }
 

@@ -1,12 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import 'app/credentials.dart';
+import 'app/paths.dart';
 import 'app/session.dart';
 import 'crypto/vault.dart';
 import 'media/gallery.dart';
+import 'sync/background.dart';
 import 'ui/connect_screen.dart';
 import 'ui/home_screen.dart';
 import 'ui/passphrase_screen.dart';
@@ -19,9 +20,6 @@ void main() {
   runApp(const HappyDriveApp());
 }
 
-Future<Directory> _defaultDataDir() async =>
-    Directory('${(await getApplicationSupportDirectory()).path}/happy_drive');
-
 class HappyDriveApp extends StatefulWidget {
   final CredentialStore credentials;
   final Future<Directory> Function() dataDir;
@@ -32,7 +30,7 @@ class HappyDriveApp extends StatefulWidget {
   const HappyDriveApp({
     super.key,
     this.credentials = const CredentialStore(),
-    this.dataDir = _defaultDataDir,
+    this.dataDir = appDataDir,
     this.clientFactory = defaultBucketClient,
     this.gallery = const Gallery(),
     this.kdfParams = const KdfParams(),
@@ -130,6 +128,10 @@ class _HappyDriveAppState extends State<HappyDriveApp> {
       await session.photos.clearCache();
       session.dispose();
     }
+    await BackgroundBackup.configure(
+      enabled: false,
+      wifiOnly: true,
+    ).catchError((_) {});
     await _store.forgetEverything();
   }
 
