@@ -29,7 +29,7 @@ Flutter app for Android and iOS. There's no server: the app talks straight to yo
 
 ## Setting up (each person, once)
 
-1. **Sign in** to [huggingface.co](https://huggingface.co). A free account includes 100 GB of private storage.
+1. **Sign in** to [huggingface.co](https://huggingface.co). A free account includes 100 GB of private storage; PRO includes 1 TB.
 2. **Create a Write token** at **Settings → Access Tokens**.
 3. **Generate S3 credentials:** in the token list, open the token's menu (⋯) and choose **Generate S3 credentials**. Copy the access key (`HFAK…`) and the secret; the secret is shown only once.
 4. **Connect:** in the app, enter your username, the access key and the secret.
@@ -39,7 +39,7 @@ Flutter app for Android and iOS. There's no server: the app talks straight to yo
    - It encrypts everything. **There is no recovery: forget it and the photos can't be opened.**
    - A new phone needs the same three sign-in values plus the passphrase.
 6. **AI descriptions (optional):** add a token with the **Make calls to Inference Providers** permission in Settings.
-   - Free accounts get about $0.10 of credits a month.
+   - Free accounts get about $0.10 of credits a month; PRO gets $2.
 
 ## Running
 
@@ -139,7 +139,7 @@ The storage check creates the bucket, stores the library key, backs up photos (i
 
 ## Current limits
 
-- **Real-world testing:** nothing has been tested yet against a real Hugging Face account or on a physical phone, and no iOS build has been made.
+- **Real-world testing:** the app has not run on a physical phone yet, and no iOS build has been made. Verified so far: AI descriptions and weather against the live services, and the whole storage stack (sign-in, encrypted upload, download, dedupe, sync, compaction, delete) against a real S3 server locally. Request signing matches botocore byte-for-byte for the app's own request shapes. What's still unproven is the Hugging Face gateway itself: run the live storage check to confirm it.
 - **iPhone background backup:** it happens when the app opens; the iOS background task isn't set up yet.
 - **Not supported yet:** videos, albums, sharing, face grouping, map view, Windows and web.
 - **Deleting photos:** removes the files right away. If a delete fails partway, the leftover files are hidden from the library but still use storage until cleaned up.
