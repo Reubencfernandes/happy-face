@@ -111,6 +111,23 @@ Every change is a small encrypted journal entry (`lib/data/remote_catalogue.dart
 - weather and AI error handling
 - the first-run flow on a phone-sized screen
 
+### Live checks (opt-in)
+
+`test/live/` holds checks that talk to real services. They're skipped by default, so `flutter test` stays offline.
+
+```bash
+# AI descriptions, against your account
+HF_TOKEN=hf_... TEST_IMAGE=/path/to/photo.jpg flutter test test/live/caption_test.dart
+
+# Weather
+LIVE_WEATHER=1 flutter test test/live/weather_test.dart
+
+# Storage, end to end: creates a throwaway bucket in your account
+HF_NAMESPACE=your-username HFAK_KEY=HFAK... HFAK_SECRET=... flutter test test/live/storage_test.dart
+```
+
+The storage check creates the bucket, stores the library key, backs up photos (including a duplicate), confirms the bucket holds only unreadable data, downloads and decrypts, loads the library as a second device, compacts the journal and deletes. It leaves the test bucket behind for you to look at, and prints its address.
+
 ### Checking against a real account
 
 1. Connect and set a passphrase. The `happy-drive` bucket appears in your account.
