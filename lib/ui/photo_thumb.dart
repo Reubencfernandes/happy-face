@@ -41,6 +41,7 @@ class PhotoThumb extends StatefulWidget {
   final bool showBadge;
   final bool selected;
   final bool selecting;
+  final double radius;
 
   const PhotoThumb({
     super.key,
@@ -49,6 +50,7 @@ class PhotoThumb extends StatefulWidget {
     this.showBadge = true,
     this.selected = false,
     this.selecting = false,
+    this.radius = 14,
   });
 
   @override
@@ -133,10 +135,11 @@ class _PhotoThumbState extends State<PhotoThumb> {
           scale: widget.selected ? 0.86 : 1,
           duration: const Duration(milliseconds: 120),
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(widget.selected ? 10 : 2),
+            borderRadius: BorderRadius.circular(widget.radius),
             child: image,
           ),
         ),
+        if (widget.item.kind != MediaKind.image) _kindBadge(),
         if (widget.showBadge && !widget.selecting) _badge(scheme),
         if (widget.selecting)
           Positioned(
@@ -156,12 +159,39 @@ class _PhotoThumbState extends State<PhotoThumb> {
 
   Widget _placeholder(ColorScheme scheme, {bool broken = false}) => ColoredBox(
     color: scheme.surfaceContainerHighest,
-    child: broken
-        ? Icon(
-            Icons.image_not_supported_outlined,
-            color: scheme.onSurfaceVariant,
-          )
-        : null,
+    child: switch ((broken, widget.item.kind)) {
+      // A file that has no preview still says what it is.
+      (_, MediaKind.file) => Icon(
+        Icons.description_outlined,
+        color: scheme.onSurfaceVariant,
+      ),
+      (_, MediaKind.video) => Icon(
+        Icons.movie_outlined,
+        color: scheme.onSurfaceVariant,
+      ),
+      (true, _) => Icon(
+        Icons.image_not_supported_outlined,
+        color: scheme.onSurfaceVariant,
+      ),
+      _ => null,
+    },
+  );
+
+  /// A corner mark so videos and files are obvious in a grid of photos.
+  Widget _kindBadge() => Positioned(
+    left: 4,
+    bottom: 4,
+    child: Semantics(
+      label: widget.item.kind == MediaKind.video ? 'Video' : 'File',
+      child: Icon(
+        widget.item.kind == MediaKind.video
+            ? Icons.play_circle_fill
+            : Icons.attach_file,
+        size: 18,
+        color: Colors.white,
+        shadows: const [Shadow(blurRadius: 4, color: Colors.black87)],
+      ),
+    ),
   );
 
   Widget _badge(ColorScheme scheme) {

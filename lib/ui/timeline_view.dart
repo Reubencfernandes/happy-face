@@ -9,9 +9,21 @@ import 'photo_viewer.dart';
 /// Timeline items the user has selected, shared with the app bar.
 class Selection extends ChangeNotifier {
   final Map<String, TimelineItem> items = {};
-  bool get active => items.isNotEmpty;
+  bool _choosing = false;
+
+  /// True while tiles show a tick — either because the user picked
+  /// "Choose photos" or because they long-pressed one.
+  bool get active => _choosing || items.isNotEmpty;
   int get length => items.length;
   bool contains(TimelineItem i) => items.containsKey(i.key);
+
+  /// Turns on selection with nothing selected yet, so the next tap picks
+  /// a photo instead of opening it.
+  void start() {
+    if (_choosing) return;
+    _choosing = true;
+    notifyListeners();
+  }
 
   void toggle(TimelineItem i) {
     items.containsKey(i.key) ? items.remove(i.key) : items[i.key] = i;
@@ -26,8 +38,9 @@ class Selection extends ChangeNotifier {
   }
 
   void clear() {
-    if (items.isEmpty) return;
+    if (items.isEmpty && !_choosing) return;
     items.clear();
+    _choosing = false;
     notifyListeners();
   }
 }
@@ -92,13 +105,17 @@ class _Cells extends _Row {
 }
 
 class _TimelineViewState extends State<TimelineView> {
-  static const _densities = [3, 5, 8];
+  static const _densities = [2, 4, 6];
   static const _headerHeight = 52.0;
+
+  /// Portrait tiles, like the photos themselves.
+  static const _tileAspect = 0.78;
+  static const _gap = 3.0;
 
   final _scroll = ScrollController();
   List<TimelineItem> _items = const [];
   int _revision = -1;
-  int _density = 0;
+  int _density = 1;
 
   // Layout cache.
   List<_Row> _rows = const [];
@@ -164,6 +181,9 @@ class _TimelineViewState extends State<TimelineView> {
 
   int get _columns => _densities[_density];
 
+  /// How tall one row of tiles is at this width.
+  double _tileHeight(double width) => width / _columns / _tileAspect;
+
   void _layout(double width) {
     if (width == _layoutWidth &&
         _columns == _layoutColumns &&
@@ -173,10 +193,10 @@ class _TimelineViewState extends State<TimelineView> {
     _layoutWidth = width;
     _layoutColumns = _columns;
     _layoutItems = _items;
-    final byMonth = _columns > 3;
+    final byMonth = _columns > 4;
     final rows = <_Row>[];
     final offsets = <double>[];
-    final tile = width / _columns;
+    final tile = _tileHeight(width);
     var y = 0.0;
     var i = 0;
     while (i < _items.length) {
@@ -321,7 +341,8 @@ class _TimelineViewState extends State<TimelineView> {
         builder: (context, constraints) {
           final width = constraints.maxWidth - widget.padding.horizontal;
           _layout(width);
-          final tile = width / _columns;
+          final tileWidth = width / _columns;
+          final tile = _tileHeight(width);
           final selecting = widget.selection.active;
           return Listener(
             onPointerDown: _onPointerDown,
@@ -352,12 +373,12 @@ class _TimelineViewState extends State<TimelineView> {
                       children: [
                         for (var c = 0; c < _columns; c++)
                           SizedBox(
-                            width: tile,
+                            width: tileWidth,
                             height: tile,
                             child: c >= count
                                 ? null
                                 : Padding(
-                                    padding: const EdgeInsets.all(1),
+                                    padding: const EdgeInsets.all(_gap),
                                     child: _tile(start + c, selecting),
                                   ),
                           ),
@@ -424,14 +445,14 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 18, 4, 6),
+      padding: const EdgeInsets.fromLTRB(16, 18, 4, 8),
       child: Row(
         children: [
           Expanded(
             child: Text(
               label,
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),

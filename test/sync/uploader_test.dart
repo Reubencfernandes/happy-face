@@ -223,7 +223,11 @@ void main() {
     };
     final results = await uploader().run([
       source('ok.jpg', photoBytes(1)),
-      source('notes.txt', Uint8List.fromList(utf8.encode('hello'))),
+      // A photo that lives in iCloud and can't be read right now.
+      UploadSource(
+        name: 'away.jpg',
+        read: () async => throw const FormatException('Not on the phone.'),
+      ),
       source('ok2.jpg', photoBytes(2)),
     ]);
     expect(results.map((r) => r.outcome), [
@@ -231,8 +235,42 @@ void main() {
       UploadOutcome.failed,
       UploadOutcome.uploaded,
     ]);
-    expect(results[1].error, contains('Not a supported photo'));
+    expect(results[1].error, contains('Not on the phone'));
     expect(failures, 2);
+  });
+
+  test('videos and other files are stored as they are', () async {
+    final video = Uint8List.fromList([
+      0,
+      0,
+      0,
+      24,
+      ...ascii.encode('ftypisom'),
+      ...List.filled(400, 3),
+    ]);
+    final results = await uploader().run([
+      source('holiday.mov', video),
+      source('notes.txt', Uint8List.fromList(utf8.encode('hello there'))),
+    ], compression: Compression.balanced);
+    expect(results.map((r) => r.outcome), [
+      UploadOutcome.uploaded,
+      UploadOutcome.uploaded,
+    ]);
+    final records = catalogue.state.records;
+    final stored = {
+      for (final r in results) records[r.photoId!]!.name: records[r.photoId!]!,
+    };
+    expect(stored['holiday.mov']!.mime, 'video/mp4');
+    expect(stored['notes.txt']!.mime, 'text/plain');
+    // Nothing was re-encoded, and neither file invented a thumbnail.
+    expect(codec.compressions, 0);
+    for (final r in results) {
+      expect(
+        bucket.objects.containsKey(BucketLayout.thumbnail(r.photoId!)),
+        isFalse,
+      );
+      expect(records[r.photoId!]!.compression, 'original');
+    }
   });
 
   test('an interrupted run resumes without duplicates', () async {

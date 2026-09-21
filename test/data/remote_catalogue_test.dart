@@ -35,10 +35,10 @@ void main() {
     expect(tablet.state.records['a']!.name, 'secret-name.jpg');
 
     await phone.commit([
-      PatchOp('a', {'caption': 'dog'}, 2),
+      PatchOp('a', {'place': 'Panaji'}, 2),
     ]);
     expect(await tablet.refresh(), {'a'});
-    expect(tablet.state.records['a']!.caption, 'dog');
+    expect(tablet.state.records['a']!.place, 'Panaji');
     expect(await tablet.refresh(), isEmpty);
   });
 
@@ -46,11 +46,11 @@ void main() {
     final phone = device();
     await phone.commit([
       PutOp(photo('a', name: 'passport-scan.jpg'), 1),
-      PatchOp('a', {'place': 'Panaji', 'caption': 'my passport'}, 2),
+      PatchOp('a', {'place': 'Panaji', 'country': 'India'}, 2),
     ]);
     for (final entry in bucket.objects.entries) {
       final text = latin1.decode(entry.value);
-      for (final secret in ['passport', 'Panaji', 'image/jpeg']) {
+      for (final secret in ['passport', 'Panaji', 'India', 'image/jpeg']) {
         expect(text, isNot(contains(secret)), reason: entry.key);
       }
     }
@@ -63,14 +63,14 @@ void main() {
     await a.commit([PutOp(photo('x'), 1)]);
     await b.commit([PutOp(photo('y'), 2)]);
     await a.commit([
-      PatchOp('y', {'caption': 'from a'}, 3),
+      PatchOp('y', {'place': 'from a'}, 3),
     ]); // a hasn't seen y yet
     await a.refresh();
     await b.refresh();
     // a applied the patch before it knew y; a reload re-derives the truth.
     await a.load();
     expect(stateOf(a), stateOf(b));
-    expect(a.state.records['y']!.caption, 'from a');
+    expect(a.state.records['y']!.place, 'from a');
   });
 
   test(

@@ -9,6 +9,7 @@ import '../data/catalogue.dart';
 import '../data/local_db.dart';
 import '../media/image_type.dart';
 import '../s3/s3_client.dart';
+import 'compression_sheet.dart';
 import 'format.dart';
 
 class PhotoViewer extends StatefulWidget {
@@ -67,18 +68,26 @@ class _PhotoViewerState extends State<PhotoViewer> {
     }
   }
 
-  Future<void> _saveToPhone() => _run('Saved to your photos', () async {
+  Future<void> _saveToPhone() => _run('Saved to this phone', () async {
     final record = _record!;
     final bytes = await _session.photos.original(record.id);
-    await _session.gallery.saveToPhone(bytes, record.name);
+    await _session.gallery.saveToPhone(bytes, record.name, mime: record.mime);
     await _session.scanGallery();
   });
 
-  Future<void> _backUp() => _run('Backed up', () async {
-    final results = await _session.backUpAssets([_item.assetId!]);
-    final error = results.where((r) => r.error != null).firstOrNull?.error;
-    if (error != null) throw Exception(error);
-  });
+  Future<void> _backUp() async {
+    // One photo, one choice: this is where a keeper gets stored untouched
+    // even when the default is set to save space.
+    final compression = await chooseCompression(context, _session, count: 1);
+    if (compression == null || !mounted) return;
+    await _run('Backed up', () async {
+      final results = await _session.backUpAssets([
+        _item.assetId!,
+      ], compression: compression);
+      final error = results.where((r) => r.error != null).firstOrNull?.error;
+      if (error != null) throw Exception(error);
+    });
+  }
 
   Future<void> _delete() async {
     final record = _record;
@@ -116,6 +125,7 @@ class _PhotoViewerState extends State<PhotoViewer> {
             assetId: _item.assetId,
             takenAt: _item.takenAt,
             tzOffsetMinutes: _item.tzOffsetMinutes,
+            mime: _item.mime,
             state: BackupState.localOnly,
           ),
         );
@@ -140,102 +150,94 @@ class _PhotoViewerState extends State<PhotoViewer> {
   @override
   Widget build(BuildContext context) {
     final item = _items.isEmpty ? null : _item;
-    return Theme(
-      data: ThemeData.dark(useMaterial3: true).copyWith(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFF2A33A),
-          brightness: Brightness.dark,
-        ),
-      ),
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        extendBodyBehindAppBar: true,
-        appBar: _chrome && item != null
-            ? AppBar(
-                backgroundColor: Colors.black45,
-                title: Text(
-                  dayLabel(item.localTakenAt),
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                actions: [
-                  if (_busy)
-                    const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ),
-                  IconButton(
-                    tooltip: 'Details',
-                    icon: const Icon(Icons.info_outline),
-                    onPressed: _details,
-                  ),
-                ],
-              )
-            : null,
-        body: item == null
-            ? const SizedBox.shrink()
-            : PageView.builder(
-                controller: _pages,
-                itemCount: _items.length,
-                onPageChanged: (i) => setState(() => _index = i),
-                itemBuilder: (context, i) => GestureDetector(
-                  onTap: () => setState(() => _chrome = !_chrome),
-                  child: _FullImage(
-                    key: ValueKey(_items[i].key),
-                    session: _session,
-                    item: _items[i],
-                  ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
+      appBar: _chrome && item != null
+          ? AppBar(
+              backgroundColor: Colors.black45,
+              title: Text(
+                dayLabel(item.localTakenAt),
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-        bottomNavigationBar: _chrome && item != null
-            ? SafeArea(
-                child: Container(
-                  color: Colors.black45,
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      if (item.state == BackupState.localOnly)
-                        _Action(
-                          icon: Icons.cloud_upload_outlined,
-                          label: 'Back up',
-                          onTap: _busy ? null : _backUp,
-                        ),
-                      if (item.state == BackupState.cloudOnly)
-                        _Action(
-                          icon: Icons.download_outlined,
-                          label: 'Save to phone',
-                          onTap: _busy ? null : _saveToPhone,
-                        ),
-                      if (item.state == BackupState.backedUp)
-                        const _Action(
-                          icon: Icons.cloud_done_outlined,
-                          label: 'Backed up',
-                          onTap: null,
-                        ),
-                      _Action(
-                        icon: Icons.info_outline,
-                        label: 'Details',
-                        onTap: _details,
-                      ),
-                      if (item.photoId != null)
-                        _Action(
-                          icon: Icons.delete_outline,
-                          label: 'Delete',
-                          onTap: _busy ? null : _delete,
-                        ),
-                    ],
+              actions: [
+                if (_busy)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
                   ),
+                IconButton(
+                  tooltip: 'Details',
+                  icon: const Icon(Icons.info_outline),
+                  onPressed: _details,
                 ),
-              )
-            : null,
-      ),
+              ],
+            )
+          : null,
+      body: item == null
+          ? const SizedBox.shrink()
+          : PageView.builder(
+              controller: _pages,
+              itemCount: _items.length,
+              onPageChanged: (i) => setState(() => _index = i),
+              itemBuilder: (context, i) => GestureDetector(
+                onTap: () => setState(() => _chrome = !_chrome),
+                child: _FullImage(
+                  key: ValueKey(_items[i].key),
+                  session: _session,
+                  item: _items[i],
+                ),
+              ),
+            ),
+      bottomNavigationBar: _chrome && item != null
+          ? SafeArea(
+              child: Container(
+                color: Colors.black45,
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    if (item.state == BackupState.localOnly)
+                      _Action(
+                        icon: Icons.cloud_upload_outlined,
+                        label: 'Back up',
+                        onTap: _busy ? null : _backUp,
+                      ),
+                    if (item.state == BackupState.cloudOnly)
+                      _Action(
+                        icon: Icons.download_outlined,
+                        label: 'Save to phone',
+                        onTap: _busy ? null : _saveToPhone,
+                      ),
+                    if (item.state == BackupState.backedUp)
+                      const _Action(
+                        icon: Icons.cloud_done_outlined,
+                        label: 'Backed up',
+                        onTap: null,
+                      ),
+                    _Action(
+                      icon: Icons.info_outline,
+                      label: 'Details',
+                      onTap: _details,
+                    ),
+                    if (item.photoId != null)
+                      _Action(
+                        icon: Icons.delete_outline,
+                        label: 'Delete',
+                        onTap: _busy ? null : _delete,
+                      ),
+                  ],
+                ),
+              ),
+            )
+          : null,
     );
   }
 }
@@ -301,6 +303,10 @@ class _FullImageState extends State<_FullImage> {
       if (mounted && _full == null) setState(() => _preview = thumb);
     } catch (_) {}
 
+    // A video or a document is never decoded here: the original could be
+    // hundreds of megabytes, and it wouldn't be an image at the end of it.
+    if (item.kind != MediaKind.image) return;
+
     try {
       Uint8List? bytes;
       if (item.assetId != null) {
@@ -342,6 +348,18 @@ class _FullImageState extends State<_FullImage> {
 
   @override
   Widget build(BuildContext context) {
+    final item = widget.item;
+    if (item.kind != MediaKind.image) {
+      final record = item.photoId == null
+          ? null
+          : widget.session.db.photo(item.photoId!);
+      return _FileHero(
+        kind: item.kind,
+        preview: _preview,
+        name: record?.name,
+        size: record?.size,
+      );
+    }
     final bytes = _full ?? _preview;
     return Stack(
       fit: StackFit.expand,
@@ -390,6 +408,79 @@ class _FullImageState extends State<_FullImage> {
   }
 }
 
+/// What a video or a document looks like in the viewer: its own preview if
+/// the phone made one, and what it is underneath.
+class _FileHero extends StatelessWidget {
+  final MediaKind kind;
+  final Uint8List? preview;
+  final String? name;
+  final int? size;
+
+  const _FileHero({
+    required this.kind,
+    required this.preview,
+    required this.name,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final preview = this.preview;
+    final video = kind == MediaKind.video;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (preview != null)
+          Image.memory(
+            preview,
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
+          ),
+        Center(
+          child: Container(
+            margin: const EdgeInsets.all(32),
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  video ? Icons.movie_outlined : Icons.description_outlined,
+                  size: 44,
+                  color: Colors.white,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  name ?? (video ? 'Video' : 'File'),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  [
+                    if (size != null) fileSize(size!),
+                    video
+                        ? 'Save it to your phone to watch it'
+                        : 'Save it to open it in another app',
+                  ].join(' · '),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _DetailsSheet extends StatelessWidget {
   final TimelineItem item;
   final PhotoRecord? record;
@@ -397,7 +488,6 @@ class _DetailsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final r = record;
     Widget row(IconData icon, String title, String? subtitle) => ListTile(
       contentPadding: EdgeInsets.zero,
@@ -412,18 +502,6 @@ class _DetailsSheet extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (r?.caption != null) ...[
-              Text(r!.caption!, style: theme.textTheme.titleMedium),
-              if (r.tags.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [for (final t in r.tags) Chip(label: Text(t))],
-                ),
-              ],
-              const SizedBox(height: 8),
-            ],
             row(
               Icons.calendar_today_outlined,
               fullDateTime(item.localTakenAt, item.tzOffsetMinutes),

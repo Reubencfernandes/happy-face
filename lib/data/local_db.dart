@@ -19,6 +19,17 @@ enum TimelineSort { taken, uploaded }
 
 enum TimelineFilter { all, backedUp, localOnly, cloudOnly }
 
+/// What a timeline cell is holding. Photos have a preview of their own;
+/// videos borrow one from the phone; other files get an icon.
+enum MediaKind { image, video, file }
+
+MediaKind mediaKindOf(String? mime) => switch (mime) {
+  null => MediaKind.image,
+  _ when mime.startsWith('image/') => MediaKind.image,
+  _ when mime.startsWith('video/') => MediaKind.video,
+  _ => MediaKind.file,
+};
+
 /// One cell in the timeline: a cloud photo, a phone photo, or both.
 class TimelineItem {
   final String? photoId;
@@ -26,13 +37,20 @@ class TimelineItem {
   final DateTime takenAt;
   final int? tzOffsetMinutes;
   final BackupState state;
+
+  /// What kind of file this is, when known.
+  final String? mime;
+
   const TimelineItem({
     required this.photoId,
     required this.assetId,
     required this.takenAt,
     required this.tzOffsetMinutes,
     required this.state,
+    this.mime,
   });
+
+  MediaKind get kind => mediaKindOf(mime);
 
   DateTime get localTakenAt =>
       takenAt.add(Duration(minutes: tzOffsetMinutes ?? 0));
@@ -46,11 +64,13 @@ class DeviceAsset {
   final DateTime takenAt;
   final int? tzOffsetMinutes;
   final DateTime modifiedAt;
+  final bool isVideo;
   const DeviceAsset({
     required this.assetId,
     required this.takenAt,
     required this.modifiedAt,
     this.tzOffsetMinutes,
+    this.isVideo = false,
   });
 }
 
@@ -70,7 +90,7 @@ class BackupStats {
   int get pending => onDevice - backedUp;
 }
 
-enum JobKind { place, weather, caption }
+enum JobKind { place, weather }
 
 class Job {
   final String photoId;
@@ -97,7 +117,18 @@ class LocalDb {
 
   void _migrate() {
     final version = db.select('PRAGMA user_version').first.values.first as int;
-    if (version >= 1) return;
+    if (version < 1) _createSchema();
+    if (version < 2) {
+      // Videos and other files joined the photos, so the timeline has to
+      // know which is which before it has downloaded anything.
+      db.execute('''
+        ALTER TABLE device_assets ADD COLUMN kind TEXT;
+        PRAGMA user_version = 2;
+      ''');
+    }
+  }
+
+  void _createSchema() {
     db.execute('''
       PRAGMA journal_mode = WAL;
       CREATE TABLE photos (
@@ -113,7 +144,7 @@ class LocalDb {
       CREATE INDEX photos_uploaded ON photos(uploaded_at);
       CREATE INDEX photos_place ON photos(country, place);
       CREATE VIRTUAL TABLE photos_fts USING fts5(
-        id UNINDEXED, name, caption, tags, place, weather, date,
+        id UNINDEXED, name, place, weather, date,
         tokenize = 'unicode61 remove_diacritics 2'
       );
       CREATE TABLE device_assets (
@@ -188,13 +219,11 @@ class LocalDb {
     db.execute('DELETE FROM photos_fts WHERE id = ?', [r.id]);
     final local = r.localTakenAt;
     db.execute(
-      'INSERT INTO photos_fts (id, name, caption, tags, place, weather, date) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO photos_fts (id, name, place, weather, date) '
+      'VALUES (?, ?, ?, ?, ?)',
       [
         r.id,
         r.name,
-        r.caption ?? '',
-        r.tags.join(' '),
         [r.place, r.country].whereType<String>().join(' '),
         (r.weather?['summary'] as String?) ?? '',
         '${local.year} ${_months[local.month - 1]} '
@@ -283,6 +312,7 @@ class LocalDb {
       parts.add(
         'SELECT p.id AS photo_id, MIN(d.asset_id) AS asset_id, p.taken_at AS taken_at, '
         'p.tz AS tz, $cloudSort AS sort_key, '
+        "json_extract(p.json, '\$.mime') AS mime, "
         "CASE WHEN MIN(d.asset_id) IS NULL THEN 'cloud' ELSE 'synced' END AS state "
         'FROM photos p LEFT JOIN device_assets d ON d.photo_id = p.id '
         'WHERE 1=1${range('p.taken_at')}${placeFilter()} '
@@ -295,7 +325,9 @@ class LocalDb {
         sort == TimelineSort.taken) {
       parts.add(
         "SELECT NULL AS photo_id, d.asset_id AS asset_id, d.taken_at AS taken_at, d.tz AS tz, "
-        "d.taken_at AS sort_key, 'local' AS state FROM device_assets d "
+        "d.taken_at AS sort_key, "
+        "CASE d.kind WHEN 'video' THEN 'video/*' ELSE NULL END AS mime, "
+        "'local' AS state FROM device_assets d "
         'WHERE (d.photo_id IS NULL OR d.photo_id NOT IN (SELECT id FROM photos))'
         '${range('d.taken_at')}',
       );
@@ -317,6 +349,7 @@ class LocalDb {
             isUtc: true,
           ),
           tzOffsetMinutes: r['tz'] as int?,
+          mime: r['mime'] as String?,
           state: switch (r['state']) {
             'synced' => BackupState.backedUp,
             'cloud' => BackupState.cloudOnly,
@@ -328,7 +361,7 @@ class LocalDb {
 
   // ---------------------------------------------------------------- search
 
-  /// Full-text search over name, caption, tags, place, weather and date.
+  /// Full-text search over name, place, weather and date.
   /// Every word must match (prefix match), e.g. `beach 2025` or `rain goa`.
   List<PhotoRecord> search(String query, {int limit = 300}) {
     final words = RegExp(r'[\p{L}\p{N}]+', unicode: true)
@@ -369,9 +402,11 @@ class LocalDb {
   /// haven't been edited since they were backed up.
   void upsertDeviceAssets(Iterable<DeviceAsset> assets) => _tx(() {
     final stmt = db.prepare(
-      'INSERT INTO device_assets (asset_id, taken_at, tz, modified_at) VALUES (?, ?, ?, ?) '
+      'INSERT INTO device_assets (asset_id, taken_at, tz, modified_at, kind) '
+      'VALUES (?, ?, ?, ?, ?) '
       'ON CONFLICT(asset_id) DO UPDATE SET taken_at = excluded.taken_at, '
-      'tz = excluded.tz, modified_at = excluded.modified_at',
+      'tz = excluded.tz, modified_at = excluded.modified_at, '
+      'kind = excluded.kind',
     );
     try {
       for (final a in assets) {
@@ -380,6 +415,7 @@ class LocalDb {
           a.takenAt.millisecondsSinceEpoch,
           a.tzOffsetMinutes,
           a.modifiedAt.millisecondsSinceEpoch,
+          a.isVideo ? 'video' : 'image',
         ]);
       }
     } finally {
@@ -454,22 +490,12 @@ class LocalDb {
     [photoId, kind.name, notBefore?.millisecondsSinceEpoch ?? 0],
   );
 
-  List<Job> dueJobs(
-    JobKind kind,
-    DateTime now, {
-    int limit = 20,
-    DateTime? uploadedSince,
-  }) => [
+  List<Job> dueJobs(JobKind kind, DateTime now, {int limit = 20}) => [
     for (final r in db.select(
       'SELECT j.photo_id, j.attempts FROM jobs j JOIN photos p ON p.id = j.photo_id '
-      'WHERE j.kind = ? AND j.done = 0 AND j.not_before <= ? AND p.uploaded_at >= ? '
+      'WHERE j.kind = ? AND j.done = 0 AND j.not_before <= ? '
       'ORDER BY p.taken_at DESC LIMIT ?',
-      [
-        kind.name,
-        now.millisecondsSinceEpoch,
-        uploadedSince?.millisecondsSinceEpoch ?? 0,
-        limit,
-      ],
+      [kind.name, now.millisecondsSinceEpoch, limit],
     ))
       Job(r['photo_id'] as String, kind, r['attempts'] as int),
   ];
@@ -507,10 +533,6 @@ class LocalDb {
     db.execute(
       "INSERT OR IGNORE INTO jobs (photo_id, kind) SELECT id, 'weather' FROM photos "
       "WHERE json_extract(json, '\$.weather') IS NULL AND json_extract(json, '\$.lat') IS NOT NULL",
-    );
-    db.execute(
-      "INSERT OR IGNORE INTO jobs (photo_id, kind) SELECT id, 'caption' FROM photos "
-      "WHERE json_extract(json, '\$.caption') IS NULL",
     );
   });
 

@@ -18,13 +18,13 @@ void main() {
   test('put, patch and delete', () {
     final c = Catalogue();
     expect(c.apply(PutOp(photo('a'), 1)), isTrue);
-    expect(c.apply(PatchOp('a', {'caption': 'a dog on a beach'}, 2)), isTrue);
-    expect(c.records['a']!.caption, 'a dog on a beach');
-    expect(c.apply(PatchOp('a', {'caption': null}, 3)), isTrue);
-    expect(c.records['a']!.caption, isNull);
+    expect(c.apply(PatchOp('a', {'place': 'Goa'}, 2)), isTrue);
+    expect(c.records['a']!.place, 'Goa');
+    expect(c.apply(PatchOp('a', {'place': null}, 3)), isTrue);
+    expect(c.records['a']!.place, isNull);
     expect(c.apply(DeleteOp('a', 4)), isTrue);
     expect(c.records, isEmpty);
-    expect(c.apply(PatchOp('a', {'caption': 'late'}, 5)), isFalse);
+    expect(c.apply(PatchOp('a', {'place': 'late'}, 5)), isFalse);
   });
 
   test('a stale put cannot resurrect a later delete, a newer one can', () {
@@ -41,24 +41,24 @@ void main() {
       ..apply(PutOp(photo('a'), 1))
       ..apply(
         PatchOp('a', {
-          'caption': 'sunset',
           'place': 'Goa',
-          'tags': ['sea'],
+          'country': 'India',
+          'weather': {'code': 0},
         }, 2),
       )
       ..apply(PutOp(photo('a', name: 'copy.jpg'), 3));
     expect(c.records['a']!.name, 'copy.jpg');
-    expect(c.records['a']!.caption, 'sunset');
     expect(c.records['a']!.place, 'Goa');
-    expect(c.records['a']!.tags, ['sea']);
+    expect(c.records['a']!.country, 'India');
+    expect(c.records['a']!.weather, {'code': 0});
   });
 
   test('devices converge regardless of the order ops arrive in', () {
     final ops = <CatalogueOp>[
       PutOp(photo('a'), 1),
       PutOp(photo('b'), 2),
-      PatchOp('a', {'caption': 'first'}, 3),
-      PatchOp('a', {'caption': 'second'}, 4),
+      PatchOp('a', {'place': 'first'}, 3),
+      PatchOp('a', {'place': 'second'}, 4),
       DeleteOp('b', 5),
       PutOp(photo('c'), 6),
       PatchOp('c', {
@@ -87,7 +87,8 @@ void main() {
       compression: 'high',
       lat: 15.49,
       lng: 73.82,
-      tags: const ['beach'],
+      place: 'Calangute',
+      country: 'India',
     );
     final op = CatalogueOp.fromJson(
       jsonDecode(jsonEncode(PutOp(rec, 9).toJson())),

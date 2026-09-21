@@ -50,6 +50,13 @@ Future<void> pumpUntil(WidgetTester tester, Finder finder) async {
 Future<void> fill(WidgetTester tester, String label, String text) =>
     tester.enterText(find.widgetWithText(TextFormField, label), text);
 
+/// The welcome screen greets a new phone; the key fields live one tap in.
+Future<void> openConnectForm(WidgetTester tester) async {
+  await pumpUntil(tester, find.text('Get started'));
+  await tester.tap(find.text('Get started'));
+  await pumpUntil(tester, find.text('Connect'));
+}
+
 Future<void> tapVisible(WidgetTester tester, Finder finder) async {
   // Lists build lazily: scroll until the target exists and is on screen.
   await tester.scrollUntilVisible(
@@ -70,7 +77,7 @@ void main() {
   ) async {
     usePhone(tester);
     await tester.pumpWidget(const HappyDriveApp(gallery: NoGallery()));
-    await pumpUntil(tester, find.text('Connect'));
+    await openConnectForm(tester);
 
     final secret = tester.widget<TextField>(
       find.descendant(
@@ -90,7 +97,28 @@ void main() {
 
     await tester.tap(find.text('Where do I get these?'));
     await tester.pumpAndSettle();
+    expect(find.text('Open Access Tokens'), findsOneWidget);
     expect(find.text('Generate S3 credentials'), findsOneWidget);
+    expect(find.text('Copy both values'), findsOneWidget);
+    // The three huggingface.co screenshots showing where to click.
+    expect(find.byType(Image), findsNWidgets(3));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the welcome screen leads to the details page', (tester) async {
+    usePhone(tester);
+    await tester.pumpWidget(const HappyDriveApp(gallery: NoGallery()));
+    await pumpUntil(tester, find.text('Get started'));
+    expect(find.text('Welcome to Happy Drive'), findsOneWidget);
+    // Nothing is asked for until the user has agreed to start.
+    expect(find.byType(TextFormField), findsNothing);
+
+    await tester.tap(find.text('Get started'));
+    await pumpUntil(tester, find.text('Connect'));
+    expect(find.text('Let\'s get\nStarted'), findsOneWidget);
+    // A new library is named for the user rather than sharing one name.
+    expect(find.textContaining('New private bucket:'), findsOneWidget);
+    expect(find.text('happy-drive'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -102,7 +130,7 @@ void main() {
     await tester.pumpWidget(
       HappyDriveApp(gallery: const NoGallery(), clientFactory: bucket.client),
     );
-    await pumpUntil(tester, find.text('Connect'));
+    await openConnectForm(tester);
     await fill(tester, 'Hugging Face username', 'reuben');
     await fill(tester, 'Access key', 'HFAKTEST1234');
     await fill(tester, 'Secret', 'supersecretvalue');
@@ -129,12 +157,14 @@ void main() {
         kdfParams: fastKdf,
       ),
     );
-    await pumpUntil(tester, find.text('Connect'));
+    await openConnectForm(tester);
     await fill(tester, 'Hugging Face username', 'reuben');
     await fill(tester, 'Access key', 'HFAKTEST1234');
     await fill(tester, 'Secret', 'supersecretvalue');
     await tester.tap(find.text('Connect'));
-    await pumpUntil(tester, find.text('Create your passphrase'));
+    await pumpUntil(tester, find.text('Create\nYour passphrase'));
+    // The connect page is a route now: let it finish sliding away.
+    await tester.pumpAndSettle();
 
     await fill(tester, 'Passphrase', 'mango kite river 42');
     await fill(tester, 'Type it again', 'mango kite river 41');

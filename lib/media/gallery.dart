@@ -1,18 +1,23 @@
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../data/local_db.dart';
 import '../sync/uploader.dart';
 import 'metadata.dart';
 
-/// The phone's photo library, via photo_manager.
+/// The phone's photo and video library, via photo_manager.
 class Gallery {
   const Gallery();
 
+  /// Photos and videos both, so a backup isn't half the memory.
+  static const _types = RequestType.common;
+
   static const _permission = PermissionRequestOption(
     androidPermission: AndroidPermission(
-      type: RequestType.image,
+      type: _types,
       // Without this Android 10+ hands us photos with GPS stripped.
       mediaLocation: true,
     ),
@@ -26,10 +31,10 @@ class Gallery {
 
   Future<void> openSettings() => PhotoManager.openSetting();
 
-  /// Lists every photo on the phone (dates only; nothing is read).
+  /// Lists every photo and video on the phone (dates only; nothing is read).
   Future<List<DeviceAsset>> scan() async {
     final paths = await PhotoManager.getAssetPathList(
-      type: RequestType.image,
+      type: _types,
       onlyAll: true,
     );
     if (paths.isEmpty) return const [];
@@ -50,6 +55,7 @@ class Gallery {
             takenAt: created.toUtc(),
             tzOffsetMinutes: created.timeZoneOffset.inMinutes,
             modifiedAt: a.modifiedDateTime.toUtc(),
+            isVideo: a.type == AssetType.video,
           ),
         );
       }
@@ -103,7 +109,35 @@ class Gallery {
     );
   }
 
-  Future<void> saveToPhone(Uint8List bytes, String filename) async {
-    await PhotoManager.editor.saveImage(bytes, filename: filename);
+  /// Puts a photo or video back in the phone's library, and anything else
+  /// in the app's own folder. Returns where it landed, for the message.
+  Future<String> saveToPhone(
+    Uint8List bytes,
+    String filename, {
+    String? mime,
+  }) async {
+    switch (mediaKindOf(mime)) {
+      case MediaKind.image:
+        await PhotoManager.editor.saveImage(bytes, filename: filename);
+        return 'your photos';
+      case MediaKind.video:
+        // saveVideo wants a file, so the bytes take a short detour.
+        final temp = File('${(await getTemporaryDirectory()).path}/$filename');
+        await temp.writeAsBytes(bytes);
+        try {
+          await PhotoManager.editor.saveVideo(temp, title: filename);
+        } finally {
+          await temp.delete().catchError((_) => temp);
+        }
+        return 'your videos';
+      case MediaKind.file:
+        final dir = Platform.isAndroid
+            ? await getExternalStorageDirectory() ??
+                  await getApplicationDocumentsDirectory()
+            : await getApplicationDocumentsDirectory();
+        final out = File('${dir.path}/$filename');
+        await out.writeAsBytes(bytes);
+        return out.path;
+    }
   }
 }

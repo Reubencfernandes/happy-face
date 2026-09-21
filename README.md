@@ -4,6 +4,16 @@ A private, Google Photos–style photo library for you and a few friends. Photos
 
 Flutter app for Android and iOS. There's no server: the app talks straight to your bucket.
 
+## Try it on a phone
+
+[**Download the Android test build (.apk)**](https://github.com/Reubencfernandes/happy-face/releases/latest/download/happy-drive.apk)
+
+A universal release APK signed with Flutter's standard debug key, so it installs
+without a Play Store account — Android will warn about an unknown source, which
+is expected for a test build. You'll need a Hugging Face account and S3
+credentials first: see [Setting up](#setting-up-each-person-once). There's no
+iOS build yet; that needs macOS and Xcode.
+
 ## What it does
 
 - **Timeline:**
@@ -11,9 +21,13 @@ Flutter app for Android and iOS. There's no server: the app talks straight to yo
   - Pinch to change density; drag the scrubber to jump by date.
   - Sort by date taken or date uploaded, and filter by backup state.
   - Photos on the phone and in the cloud appear together, with a badge showing which are backed up.
+- **Calendar:** every month as a grid of days, each day wearing one of its
+  photos; empty days stay empty, so the gaps show.
 - **Backup:**
-  - Pick photos, import files, or back up everything not yet backed up.
-  - Upload quality per upload: Original (default), High or Balanced.
+  - Photos, videos and any other file — pick them in the grid, import them from
+    Files, or back up everything not yet backed up.
+  - Upload quality chosen per backup, down to a single photo: Original
+    (default), High or Balanced. Videos and other files are stored untouched.
   - Identical photos are stored once, even across phones.
   - Interrupted uploads resume.
 - **Auto-backup:**
@@ -21,25 +35,20 @@ Flutter app for Android and iOS. There's no server: the app talks straight to yo
   - On Android it also runs as a periodic background task (Wi-Fi only by default).
 - **Places:** photos grouped by town and country, using a built-in offline list (GeoNames). Your coordinates never leave the phone.
 - **Weather (opt-in):** past weather for each photo from Open-Meteo, using only a rounded location (about 11 km) and the date.
-- **AI descriptions (opt-in):**
-  - Captions and tags from a vision model on Hugging Face Inference Providers (default `Qwen/Qwen3.8-27B`), searchable offline.
-  - Only the small thumbnail is sent.
-  - A daily limit applies, and describing pauses automatically when credits run out.
-- **Search:** captions, tags, places, weather, file names and dates ("beach 2025", "rain", "Lisbon").
+- **Search:** places, weather, file names and dates ("Lisbon 2025", "rain", "December").
 
 ## Setting up (each person, once)
 
 1. **Sign in** to [huggingface.co](https://huggingface.co). A free account includes 100 GB of private storage; PRO includes 1 TB.
 2. **Create a Write token** at **Settings → Access Tokens**.
 3. **Generate S3 credentials:** in the token list, open the token's menu (⋯) and choose **Generate S3 credentials**. Copy the access key (`HFAK…`) and the secret; the secret is shown only once.
-4. **Connect:** in the app, enter your username, the access key and the secret.
-   - The app creates a private bucket called `happy-drive`.
-   - If a bucket with that name is public, it refuses to use it.
-5. **Choose a passphrase.**
+4. **Make the bucket, and make it private.** Hugging Face buckets are **public unless you say otherwise**, and the S3 gateway the app talks to has no way to set that. So create it yourself at [huggingface.co/new-bucket](https://huggingface.co/new-bucket): name it `happy-drive` and choose **Private**.
+   - If you skip this, the app creates the bucket for you and it will be public. The app checks, refuses to use it, and tells you to switch it to private in the bucket's settings.
+   - Photos are encrypted either way, but a public bucket lets anyone list and download the encrypted files.
+5. **Connect:** in the app, enter your username, the access key and the secret.
+6. **Choose a passphrase.**
    - It encrypts everything. **There is no recovery: forget it and the photos can't be opened.**
    - A new phone needs the same three sign-in values plus the passphrase.
-6. **AI descriptions (optional):** add a token with the **Make calls to Inference Providers** permission in Settings.
-   - Free accounts get about $0.10 of credits a month; PRO gets $2.
 
 ## Running
 
@@ -76,8 +85,8 @@ v1/t/<ab>/<id>       encrypted thumbnail
 
 - **Encryption:** AES-256-GCM (`lib/crypto/vault.dart`). Each file is bound to its object name, so encrypted files can't be swapped for one another.
 - **Photo ids:** a secret-keyed fingerprint of the original bytes. This is how duplicates are detected without Hugging Face being able to tell two files match.
-- **What Hugging Face can see:** file sizes, file counts and upload times. Not photos, names, dates, places or captions.
-- **The one exception:** with AI descriptions on, thumbnails are sent to the AI provider unencrypted. The app explains this before you turn it on.
+- **What Hugging Face can see:** file sizes, file counts and upload times. Not photos, names, dates or places.
+- **Nothing leaves the phone unencrypted.** No photo or thumbnail is ever sent to a third-party service.
 
 ### Keeping phones in sync
 
@@ -95,20 +104,20 @@ Every change is a small encrypted journal entry (`lib/data/remote_catalogue.dart
 | `lib/data/` | Catalogue, sync with the bucket, local database |
 | `lib/sync/` | Upload pipeline, thumbnail cache, background backup |
 | `lib/media/` | Phone gallery, EXIF, compression, file types |
-| `lib/enrich/` | Offline places, weather, AI descriptions |
+| `lib/enrich/` | Offline places, weather |
 | `lib/app/` | Session (ties it all together), stored credentials, settings |
 | `lib/ui/` | Screens |
 
 ## Testing
 
-`flutter test` runs about 100 tests, all against an in-memory fake bucket. No test touches a real account. They cover:
+`flutter test` runs about 90 tests, all against an in-memory fake bucket. No test touches a real account. They cover:
 - SigV4 signing against official AWS vectors
 - encryption, tampering and wrong passphrases
 - two phones syncing and compacting at the same time
 - deduplication, retries, resuming and stopping early on bad keys
 - EXIF dates, time zones and GPS, using camera-format test JPEGs
 - the timeline, search and places
-- weather and AI error handling
+- weather error handling
 - the first-run flow on a phone-sized screen
 
 ### Live checks (opt-in)
@@ -116,9 +125,6 @@ Every change is a small encrypted journal entry (`lib/data/remote_catalogue.dart
 `test/live/` holds checks that talk to real services. They're skipped by default, so `flutter test` stays offline.
 
 ```bash
-# AI descriptions, against your account
-HF_TOKEN=hf_... TEST_IMAGE=/path/to/photo.jpg flutter test test/live/caption_test.dart
-
 # Weather
 LIVE_WEATHER=1 flutter test test/live/weather_test.dart
 
@@ -130,7 +136,7 @@ The storage check creates the bucket, stores the library key, backs up photos (i
 
 ### Checking against a real account
 
-1. Connect and set a passphrase. The `happy-drive` bucket appears in your account.
+1. Connect and set a passphrase. The `happy-drive` bucket shows up as private in your account.
 2. Back up about 20 photos, including one duplicate. Expect 19 stored.
 3. Open the bucket on huggingface.co. File names should be random and previews unreadable.
 4. Force-quit during a backup, reopen, and confirm it resumes with no duplicates.
@@ -139,9 +145,14 @@ The storage check creates the bucket, stores the library key, backs up photos (i
 
 ## Current limits
 
-- **Real-world testing:** the app has not run on a physical phone yet, and no iOS build has been made. Verified so far: AI descriptions and weather against the live services, and the whole storage stack (sign-in, encrypted upload, download, dedupe, sync, compaction, delete) against a real S3 server locally. Request signing matches botocore byte-for-byte for the app's own request shapes. What's still unproven is the Hugging Face gateway itself: run the live storage check to confirm it.
+- **Real-world testing:** the app has not run on a physical phone yet, and no iOS build has been made. Verified so far: weather against the live service, and the whole storage stack (sign-in, encrypted upload, download, dedupe, sync, compaction, delete) against a real S3 server locally. Request signing matches botocore byte-for-byte for the app's own request shapes. What's still unproven is the Hugging Face gateway itself: run the live storage check to confirm it.
 - **iPhone background backup:** it happens when the app opens; the iOS background task isn't set up yet.
-- **Not supported yet:** videos, albums, sharing, face grouping, map view, Windows and web.
+- **Videos and files:** they back up, download and save back to the phone, but
+  there is no player in the app yet — a video opens as a card with its name and
+  size. The motion half of a Live Photo isn't uploaded either; the still is.
+- **One file at a time, up to 256 MB:** each upload is a single request, so
+  anything larger is refused with a clear message rather than failing slowly.
+- **Not supported yet:** albums, sharing, face grouping, map view, Windows and web.
 - **Deleting photos:** removes the files right away. If a delete fails partway, the leftover files are hidden from the library but still use storage until cleaned up.
 - **App Store export compliance:** the app uses its own encryption, so answer Apple's question accordingly when submitting.
 

@@ -175,6 +175,43 @@ void main() {
     expect(await c.isPubliclyListable(), isFalse);
   });
 
+  test('public exposure: an unsigned read counts even when listing is denied', () async {
+    final c = clientWith((r) async {
+      final signed = r.headers.containsKey('authorization');
+      // Listing is locked down, but the key envelope is served to anyone.
+      if (r.url.queryParameters.containsKey('list-type')) {
+        return http.Response('', signed ? 200 : 403);
+      }
+      return http.Response('{"format":"happydrive-keys"}', 200);
+    });
+    expect(await c.isPubliclyListable(), isFalse);
+    expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isTrue);
+  });
+
+  test('public exposure: a listable bucket is caught before the probe', () async {
+    var unsignedReads = 0;
+    final c = clientWith((r) async {
+      if (r.url.queryParameters.containsKey('list-type')) {
+        return http.Response('<ListBucketResult/>', 200);
+      }
+      if (!r.headers.containsKey('authorization')) unsignedReads++;
+      return http.Response('', 404);
+    });
+    // A brand-new public bucket has no key envelope yet, so the listing
+    // check is the one that has to catch it.
+    expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isTrue);
+    expect(unsignedReads, 0, reason: 'listing already settled it');
+  });
+
+  test('public exposure: a private bucket reports clean', () async {
+    final c = clientWith((r) async {
+      return r.headers.containsKey('authorization')
+          ? http.Response('<ListBucketResult/>', 200)
+          : http.Response('', 403);
+    });
+    expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isFalse);
+  });
+
   test('rejects keys the Hugging Face gateway forbids', () {
     for (final key in [
       '/a',
@@ -184,6 +221,7 @@ void main() {
       './a',
       'a..',
       r'a\b',
+      'a\u0000b',
       '',
     ]) {
       expect(

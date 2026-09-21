@@ -111,7 +111,8 @@ class _PlacesViewState extends State<PlacesView> {
             ),
           ),
         ],
-        const SliverToBoxAdapter(child: SizedBox(height: 32)),
+        // Clear of the floating bar.
+        const SliverToBoxAdapter(child: SizedBox(height: 112)),
       ],
     );
   }

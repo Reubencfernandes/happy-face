@@ -73,6 +73,17 @@ flutter:
   assets:
     # Offline place names: GeoNames, CC BY 4.0 (https://www.geonames.org).
     - assets/places/
+    # Screenshots of huggingface.co used by the sign-in help sheet.
+    - assets/help/
+
+  # General Sans by Indian Type Foundry, via Fontshare (fontshare.com).
+  fonts:
+    - family: General Sans
+      fonts:
+        - asset: assets/fonts/GeneralSans-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/GeneralSans-Semibold.ttf
+          weight: 600
 
   # To add assets to your application, add an assets section, like this:
   # assets:

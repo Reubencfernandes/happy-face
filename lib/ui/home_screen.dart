@@ -1,5 +1,8 @@
+import 'dart:ui';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../app/session.dart';
@@ -8,9 +11,12 @@ import '../media/compress.dart';
 import '../enrich/enricher.dart';
 import '../sync/background.dart';
 import '../sync/uploader.dart';
+import 'calendar_view.dart';
+import 'compression_sheet.dart';
 import 'places_view.dart';
 import 'search_view.dart';
 import 'settings_screen.dart';
+import 'theme.dart';
 import 'timeline_view.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -129,12 +135,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     ),
   );
 
-  Future<Compression?> _pickCompression() => showModalBottomSheet<Compression>(
-    context: context,
-    showDragHandle: true,
-    builder: (context) =>
-        _CompressionSheet(initial: _session.settings.compression),
-  );
+  Future<Compression?> _pickCompression({int count = 0}) =>
+      chooseCompression(context, _session, count: count);
 
   Future<void> _openBackupSheet() async {
     final access = _session.galleryAccess;
@@ -152,10 +154,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 title: Text(
                   pending == 0
                       ? 'Everything is backed up'
-                      : 'Back up $pending photos',
+                      : 'Back up $pending photos and videos',
                 ),
                 subtitle: const Text(
-                  'All photos on this phone that aren\'t backed up yet',
+                  'Everything in this phone\'s library that isn\'t backed up yet',
                 ),
                 enabled: pending > 0,
                 onTap: () => Navigator.pop(context, 'all'),
@@ -165,16 +167,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 leading: const Icon(Icons.photo_library_outlined),
                 title: const Text('Allow access to your photos'),
                 subtitle: const Text(
-                  'To show and back up the photos on this phone',
+                  'To show and back up the photos and videos on this phone',
                 ),
                 onTap: () => Navigator.pop(context, 'access'),
               ),
             if (access?.hasAccess ?? false)
               ListTile(
                 leading: const Icon(Icons.checklist),
-                title: const Text('Choose photos'),
+                title: const Text('Choose photos and videos'),
                 subtitle: const Text(
-                  'Shows photos not backed up; long-press to select',
+                  'Shows what isn\'t backed up; long-press to select',
                 ),
                 onTap: () => Navigator.pop(context, 'choose'),
               ),
@@ -182,7 +184,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               leading: const Icon(Icons.folder_open_outlined),
               title: const Text('Import from files'),
               subtitle: const Text(
-                'Photos saved in Files, Downloads or a drive',
+                'Any file in Files, Downloads or a drive — photos, videos, '
+                'PDFs, anything',
               ),
               onTap: () => Navigator.pop(context, 'files'),
             ),
@@ -196,7 +199,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       case 'access':
         await _askAccess();
       case 'all':
-        final c = await _pickCompression();
+        final c = await _pickCompression(count: pending);
         if (c != null) {
           await _runBackup(() => _session.backUpPending(compression: c));
         }
@@ -205,7 +208,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _tab = 0;
           _options = _options.copyWith(filter: TimelineFilter.localOnly);
         });
-        _toast('Long-press photos to select them, then tap Back up');
+        _selection.start();
+        _toast('Tap photos to select them, then tap the arrow to back up');
       case 'files':
         await _importFiles();
     }
@@ -226,9 +230,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _importFiles() async {
-    final files = await FilePicker.pickFiles(type: FileType.image);
+    // Anything the user points at: photos, videos, PDFs, zips.
+    final files = await FilePicker.pickFiles(type: FileType.any);
     if (files.isEmpty || !mounted) return;
-    final compression = await _pickCompression();
+    final compression = await _pickCompression(count: files.length);
     if (compression == null) return;
     await _runBackup(
       () => _session.backUp([
@@ -242,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       for (final i in _selection.items.values)
         if (i.state == BackupState.localOnly && i.assetId != null) i.assetId!,
     ];
-    final compression = await _pickCompression();
+    final compression = await _pickCompression(count: assets.length);
     if (compression == null) return;
     _selection.clear();
     await _runBackup(
@@ -311,72 +316,121 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (mounted) _toast('Saved $saved of ${ids.length} to your photos');
   }
 
+  /// Tab 0 is the gallery; the rest keep their own names.
+  String get _title => switch (_tab) {
+    1 => 'Calendar',
+    2 => 'Places',
+    3 => 'Search',
+    _ => 'Gallery',
+  };
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: Listenable.merge([_session, _selection]),
       builder: (context, _) {
         final selecting = _selection.active;
-        return PopScope(
-          canPop: !selecting,
-          onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) _selection.clear();
-          },
-          child: Scaffold(
-            appBar: selecting ? _selectionBar() : _normalBar(),
-            body: IndexedStack(
-              index: _tab,
-              children: [
-                TimelineView(
-                  session: _session,
-                  selection: _selection,
-                  options: _options,
-                  emptyState: _EmptyTimeline(
-                    session: _session,
-                    filtered: _options.filter != TimelineFilter.all,
-                    onAllowAccess: _askAccess,
-                    onImport: _importFiles,
-                  ),
-                ),
-                PlacesView(session: _session, selection: _selection),
-                SearchView(session: _session),
-              ],
-            ),
-            floatingActionButton: _tab == 0 && !selecting
-                ? FloatingActionButton.extended(
-                    onPressed: _session.uploading
-                        ? _session.cancelUpload
-                        : _openBackupSheet,
-                    icon: Icon(
-                      _session.uploading
-                          ? Icons.stop_circle_outlined
-                          : Icons.add_photo_alternate_outlined,
+        // The gallery is always dark, whatever the phone is set to: photos
+        // belong on ink. Screens pushed from here keep the app's theme.
+        return AnnotatedRegion<SystemUiOverlayStyle>(
+          value: SystemUiOverlayStyle.light.copyWith(
+            statusBarColor: Colors.transparent,
+            systemNavigationBarColor: ink,
+          ),
+          child: PopScope(
+            canPop: !selecting,
+            onPopInvokedWithResult: (didPop, _) {
+              if (!didPop) _selection.clear();
+            },
+            child: Scaffold(
+              // The bar floats over the photos, and snack bars stack above it.
+              extendBody: true,
+              bottomNavigationBar: selecting
+                  ? null
+                  : _FloatingNav(
+                      index: _tab,
+                      onSelected: (i) {
+                        _selection.clear();
+                        setState(() => _tab = i);
+                      },
                     ),
-                    label: Text(_session.uploading ? 'Stop' : 'Back up'),
-                  )
-                : null,
-            bottomNavigationBar: NavigationBar(
-              selectedIndex: _tab,
-              onDestinationSelected: (i) {
-                _selection.clear();
-                setState(() => _tab = i);
-              },
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.photo_outlined),
-                  selectedIcon: Icon(Icons.photo),
-                  label: 'Photos',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.place_outlined),
-                  selectedIcon: Icon(Icons.place),
-                  label: 'Places',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.search),
-                  label: 'Search',
-                ),
-              ],
+              body: Stack(
+                children: [
+                  Column(
+                    children: [
+                      _Header(
+                        title: selecting
+                            ? _selection.length == 0
+                                  ? 'Choose photos'
+                                  : '${_selection.length} selected'
+                            : _title,
+                        upload: _session.upload,
+                        actions: selecting
+                            ? _selectionActions()
+                            : _normalActions(),
+                        subtitle: selecting
+                            ? null
+                            : Row(
+                                children: [
+                                  _StatusChip(session: _session),
+                                  const Spacer(),
+                                  if (_options.filter != TimelineFilter.all &&
+                                      _tab == 0)
+                                    InputChip(
+                                      label: Text(switch (_options.filter) {
+                                        TimelineFilter.localOnly =>
+                                          'Not backed up',
+                                        TimelineFilter.cloudOnly =>
+                                          'Cloud only',
+                                        TimelineFilter.backedUp => 'Backed up',
+                                        TimelineFilter.all => '',
+                                      }),
+                                      onDeleted: () => setState(
+                                        () => _options = _options.copyWith(
+                                          filter: TimelineFilter.all,
+                                        ),
+                                      ),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                ],
+                              ),
+                      ),
+                      Expanded(
+                        child: IndexedStack(
+                          index: _tab,
+                          children: [
+                            TimelineView(
+                              session: _session,
+                              selection: _selection,
+                              options: _options,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 13,
+                              ),
+                              emptyState: _EmptyTimeline(
+                                session: _session,
+                                filtered: _options.filter != TimelineFilter.all,
+                                onAllowAccess: _askAccess,
+                                onImport: _importFiles,
+                              ),
+                            ),
+                            CalendarView(
+                              session: _session,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                              ),
+                            ),
+                            PlacesView(
+                              session: _session,
+                              selection: _selection,
+                            ),
+                            SearchView(session: _session),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -384,77 +438,58 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  PreferredSizeWidget _normalBar() {
-    final upload = _session.upload;
-    return AppBar(
-      title: const Text('Happy Drive'),
-      actions: [
-        if (_tab == 0) _filterMenu(),
-        IconButton(
-          tooltip: 'Settings',
-          icon: const Icon(Icons.settings_outlined),
-          onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => SettingsScreen(
-                session: _session,
-                onSignOut: widget.onSignOut,
-              ),
-            ),
-          ),
-        ),
-      ],
-      bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(34),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Row(
-            children: [
-              _StatusChip(session: _session),
-              const Spacer(),
-              if (_options.filter != TimelineFilter.all && _tab == 0)
-                InputChip(
-                  label: Text(switch (_options.filter) {
-                    TimelineFilter.localOnly => 'Not backed up',
-                    TimelineFilter.cloudOnly => 'Cloud only',
-                    TimelineFilter.backedUp => 'Backed up',
-                    TimelineFilter.all => '',
-                  }),
-                  onDeleted: () => setState(
-                    () => _options = _options.copyWith(
-                      filter: TimelineFilter.all,
-                    ),
-                  ),
-                  visualDensity: VisualDensity.compact,
-                ),
-            ],
-          ),
+  List<Widget> _normalActions() => [
+    if (_tab == 0) _filterMenu(),
+    // The backup button: one arrow, pointing up at the cloud.
+    _CircleButton(
+      icon: _session.uploading
+          ? Icons.stop_rounded
+          : Icons.arrow_upward_rounded,
+      tooltip: _session.uploading ? 'Stop backing up' : 'Back up',
+      filled: !_session.uploading,
+      onPressed: _session.uploading ? _session.cancelUpload : _openBackupSheet,
+    ),
+    _CircleButton(
+      icon: Icons.settings_outlined,
+      tooltip: 'Settings',
+      onPressed: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              SettingsScreen(session: _session, onSignOut: widget.onSignOut),
         ),
       ),
-      flexibleSpace: upload != null && !upload.done
-          ? Align(
-              alignment: Alignment.bottomCenter,
-              child: LinearProgressIndicator(
-                value: upload.total == 0
-                    ? null
-                    : upload.completed / upload.total,
-              ),
-            )
-          : null,
-    );
-  }
+    ),
+  ];
 
   Widget _filterMenu() => PopupMenuButton<Object>(
-    tooltip: 'Sort and filter',
-    icon: const Icon(Icons.tune),
-    onSelected: (v) => setState(() {
-      _options = switch (v) {
-        TimelineSort s => _options.copyWith(sort: s),
-        TimelineFilter f => _options.copyWith(filter: f),
-        'order' => _options.copyWith(descending: !_options.descending),
-        _ => _options,
-      };
-    }),
+    tooltip: 'Choose, sort and filter',
+    position: PopupMenuPosition.under,
+    onSelected: (v) {
+      if (v == 'choose') {
+        // Straight into selection, with no long-press to discover.
+        _selection.start();
+        _toast('Tap photos to select them, then tap the arrow to back up');
+        return;
+      }
+      setState(() {
+        _options = switch (v) {
+          TimelineSort s => _options.copyWith(sort: s),
+          TimelineFilter f => _options.copyWith(filter: f),
+          'order' => _options.copyWith(descending: !_options.descending),
+          _ => _options,
+        };
+      });
+    },
     itemBuilder: (context) => [
+      const PopupMenuItem(
+        value: 'choose',
+        child: ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.check_circle_outline),
+          title: Text('Select photos'),
+        ),
+      ),
+      const PopupMenuDivider(),
       const PopupMenuItem(enabled: false, child: Text('Sort by')),
       CheckedPopupMenuItem(
         value: TimelineSort.taken,
@@ -485,40 +520,280 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           child: Text(label),
         ),
     ],
+    child: const _CircleButton(icon: Icons.apps_rounded, tooltip: null),
   );
 
-  PreferredSizeWidget _selectionBar() {
+  List<Widget> _selectionActions() {
     final items = _selection.items.values;
     final canBackUp = items.any((i) => i.state == BackupState.localOnly);
     final canDelete = items.any((i) => i.photoId != null);
     final canSave = items.any((i) => i.state == BackupState.cloudOnly);
-    return AppBar(
-      leading: IconButton(
-        tooltip: 'Clear selection',
-        icon: const Icon(Icons.close),
+    return [
+      if (canBackUp)
+        _CircleButton(
+          icon: Icons.arrow_upward_rounded,
+          tooltip: 'Back up',
+          filled: true,
+          onPressed: _backUpSelection,
+        ),
+      if (canSave)
+        _CircleButton(
+          icon: Icons.download_outlined,
+          tooltip: 'Save to phone',
+          onPressed: _saveSelection,
+        ),
+      if (canDelete)
+        _CircleButton(
+          icon: Icons.delete_outline,
+          tooltip: 'Delete from storage',
+          onPressed: _deleteSelection,
+        ),
+      _CircleButton(
+        icon: Icons.close_rounded,
+        tooltip: 'Done selecting',
         onPressed: _selection.clear,
       ),
-      title: Text('${_selection.length} selected'),
-      actions: [
-        if (canBackUp)
-          IconButton(
-            tooltip: 'Back up',
-            icon: const Icon(Icons.cloud_upload_outlined),
-            onPressed: _backUpSelection,
-          ),
-        if (canSave)
-          IconButton(
-            tooltip: 'Save to phone',
-            icon: const Icon(Icons.download_outlined),
-            onPressed: _saveSelection,
-          ),
-        if (canDelete)
-          IconButton(
-            tooltip: 'Delete from storage',
-            icon: const Icon(Icons.delete_outline),
-            onPressed: _deleteSelection,
-          ),
-      ],
+    ];
+  }
+}
+
+/// The page title, big and left-aligned, with round buttons beside it.
+class _Header extends StatelessWidget {
+  final String title;
+  final List<Widget> actions;
+  final Widget? subtitle;
+  final UploadProgress? upload;
+
+  const _Header({
+    required this.title,
+    required this.actions,
+    required this.subtitle,
+    required this.upload,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final upload = this.upload;
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 6, 14, 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ),
+                for (final action in actions) ...[
+                  const SizedBox(width: 8),
+                  action,
+                ],
+              ],
+            ),
+            if (subtitle != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, right: 6),
+                child: subtitle,
+              ),
+            if (upload != null && !upload.done)
+              Padding(
+                padding: const EdgeInsets.only(top: 8, right: 6),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: upload.total == 0
+                        ? null
+                        : upload.completed / upload.total,
+                    minHeight: 4,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A round icon button: the shape the gallery chrome is made of.
+class _CircleButton extends StatelessWidget {
+  final IconData icon;
+  final String? tooltip;
+  final VoidCallback? onPressed;
+  final bool filled;
+
+  const _CircleButton({
+    required this.icon,
+    required this.tooltip,
+    this.onPressed,
+    this.filled = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final button = Container(
+      width: 42,
+      height: 42,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: filled
+            ? scheme.primaryContainer
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      ),
+      child: Icon(
+        icon,
+        size: 21,
+        color: filled ? scheme.onPrimaryContainer : scheme.onSurface,
+      ),
+    );
+    // With no onPressed this is the face of something else, like a menu.
+    final child = onPressed == null
+        ? button
+        : InkResponse(onTap: onPressed, radius: 26, child: button);
+    return Semantics(
+      button: true,
+      label: tooltip,
+      child: tooltip == null ? child : Tooltip(message: tooltip, child: child),
+    );
+  }
+}
+
+/// The bar that floats over the photos instead of sitting under them.
+class _FloatingNav extends StatelessWidget {
+  final int index;
+  final ValueChanged<int> onSelected;
+
+  const _FloatingNav({required this.index, required this.onSelected});
+
+  static const _items = [
+    (Icons.home_outlined, Icons.home_rounded, 'Gallery'),
+    (Icons.calendar_today_outlined, Icons.calendar_month_rounded, 'Calendar'),
+    (Icons.place_outlined, Icons.place, 'Places'),
+    (Icons.auto_awesome_outlined, Icons.auto_awesome, 'Search'),
+  ];
+
+  // Every slot is the same size, so the lit one knows where to slide to.
+  static const _slotWidth = 56.0;
+  static const _slotHeight = 42.0;
+  static const _slotGap = 6.0;
+  static const _slide = Duration(milliseconds: 320);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    const step = _slotWidth + _slotGap;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        // A Row, not a Center: as the Scaffold's bottom bar this must be as
+        // tall as the pill, not as tall as the screen.
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(32),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    // Glass, not a slab: the photos show through it.
+                    color: scheme.surfaceContainerHighest.withValues(
+                      alpha: 0.52,
+                    ),
+                    borderRadius: BorderRadius.circular(34),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.09),
+                    ),
+                  ),
+                  child: SizedBox(
+                    width: _items.length * step - _slotGap,
+                    height: _slotHeight,
+                    child: Stack(
+                      children: [
+                        // One lit slot that travels, rather than one fading
+                        // out while another fades in.
+                        AnimatedPositionedDirectional(
+                          duration: _slide,
+                          curve: Curves.easeOutCubic,
+                          start: index * step,
+                          top: 0,
+                          width: _slotWidth,
+                          height: _slotHeight,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: scheme.primaryContainer,
+                              borderRadius: BorderRadius.circular(21),
+                            ),
+                          ),
+                        ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            for (final (i, (outline, filled, label))
+                                in _items.indexed) ...[
+                              if (i > 0) const SizedBox(width: _slotGap),
+                              Semantics(
+                                button: true,
+                                selected: i == index,
+                                label: label,
+                                child: Tooltip(
+                                  message: label,
+                                  child: InkResponse(
+                                    onTap: () => onSelected(i),
+                                    radius: 28,
+                                    child: SizedBox(
+                                      width: _slotWidth,
+                                      height: _slotHeight,
+                                      // The ink follows the pill rather than
+                                      // switching the moment it is tapped.
+                                      child: TweenAnimationBuilder<Color?>(
+                                        duration: _slide,
+                                        curve: Curves.easeOutCubic,
+                                        tween: ColorTween(
+                                          end: i == index
+                                              ? scheme.onPrimaryContainer
+                                              : scheme.onSurfaceVariant,
+                                        ),
+                                        builder: (context, color, _) => Icon(
+                                          i == index ? filled : outline,
+                                          size: 23,
+                                          color: color,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -640,55 +915,4 @@ class _EmptyTimeline extends StatelessWidget {
       ),
     );
   }
-}
-
-class _CompressionSheet extends StatefulWidget {
-  final Compression initial;
-  const _CompressionSheet({required this.initial});
-
-  @override
-  State<_CompressionSheet> createState() => _CompressionSheetState();
-}
-
-class _CompressionSheetState extends State<_CompressionSheet> {
-  late var _value = widget.initial;
-
-  @override
-  Widget build(BuildContext context) => SafeArea(
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-            child: Text(
-              'Upload quality',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-          ),
-          RadioGroup<Compression>(
-            groupValue: _value,
-            onChanged: (v) => setState(() => _value = v ?? _value),
-            child: Column(
-              children: [
-                for (final c in Compression.values)
-                  RadioListTile<Compression>(
-                    value: c,
-                    title: Text(c.label),
-                    subtitle: Text(c.description),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, _value),
-            child: const Text('Start backup'),
-          ),
-        ],
-      ),
-    ),
-  );
 }

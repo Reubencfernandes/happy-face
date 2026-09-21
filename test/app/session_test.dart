@@ -191,12 +191,12 @@ void main() {
 
     await other.commit([
       DeleteOp('p1', 3),
-      PatchOp('p2', {'caption': 'hello'}, 4),
+      PatchOp('p2', {'place': 'Lisbon'}, 4),
     ]);
     final before = session.revision;
     await session.sync();
     expect(session.db.allPhotoIds(), {'p2'});
-    expect(session.db.photo('p2')!.caption, 'hello');
+    expect(session.db.photo('p2')!.place, 'Lisbon');
     expect(session.revision, greaterThan(before));
     expect(session.syncError, isNull);
   });

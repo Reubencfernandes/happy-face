@@ -13,17 +13,32 @@ const _months = [
   'December',
 ];
 const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const _weekdayNames = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+];
+
+/// Single letters for a calendar heading, starting on Sunday.
+const weekdayInitials = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 String monthName(int month) => _months[month - 1];
 String shortMonth(int month) => _months[month - 1].substring(0, 3);
 
-/// "Today", "Yesterday", "Sat, 12 Sep" (this year) or "Sat, 12 Sep 2024".
+/// "Today", "Yesterday", "Friday" (this past week), "Sat, 12 Sep" (this
+/// year) or "Sat, 12 Sep 2024".
 String dayLabel(DateTime day, {DateTime? now}) {
   final today = _dateOnly(now ?? DateTime.now());
   final d = _dateOnly(day);
   final diff = today.difference(d).inDays;
   if (diff == 0) return 'Today';
   if (diff == 1) return 'Yesterday';
+  // Within the last week a weekday name says it better than a date.
+  if (diff > 1 && diff < 7) return _weekdayNames[d.weekday - 1];
   final base = '${_weekdays[d.weekday - 1]}, ${d.day} ${shortMonth(d.month)}';
   return d.year == today.year ? base : '$base ${d.year}';
 }
@@ -50,6 +65,21 @@ String fullDateTime(DateTime local, int? tzOffsetMinutes) {
         ' (UTC$sign${abs ~/ 60}${mins == 0 ? '' : ':${mins.toString().padLeft(2, '0')}'})';
   }
   return s;
+}
+
+/// Sizes the way storage is sold: 1 GB is 1000 MB, the same units Hugging
+/// Face quotes its allowances in, so "2.15 GB of 1 TB" adds up against the
+/// 997.85 GB left.
+String storageSize(int bytes) {
+  if (bytes < 1000) return '$bytes B';
+  if (bytes < 1000000) return '${(bytes / 1000).toStringAsFixed(0)} KB';
+  if (bytes < 1000000000) {
+    return '${(bytes / 1000000).toStringAsFixed(1)} MB';
+  }
+  if (bytes < 1000000000000) {
+    return '${(bytes / 1000000000).toStringAsFixed(2)} GB';
+  }
+  return '${(bytes / 1000000000000).toStringAsFixed(2)} TB';
 }
 
 String fileSize(int bytes) {

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as hash;
 import 'package:cryptography/cryptography.dart';
+import 'package:cryptography/dart.dart';
 
 class WrongPassphraseException implements Exception {
   @override
@@ -68,8 +69,12 @@ class Vault {
       throw ArgumentError('Master key must be 32 bytes');
     }
     final master = SecretKey(List.unmodifiable(masterBytes));
-    Future<SecretKey> derive(String label) => Hkdf(
-      hmac: Hmac.sha256(),
+    // Pure-Dart HKDF on purpose. With no salt, HKDF-extract keys its HMAC with
+    // an empty string, and cryptography_flutter hands that to Android's
+    // SecretKeySpec, which rejects empty keys. There is nothing to gain from
+    // the native path anyway: the input is 32 bytes.
+    Future<SecretKey> derive(String label) => DartHkdf(
+      hmac: const DartHmac(DartSha256()),
       outputLength: 32,
     ).deriveKey(secretKey: master, info: utf8.encode('happydrive:$label'));
     final content = await derive('content');

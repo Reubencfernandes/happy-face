@@ -106,6 +106,27 @@ void main() {
     },
   );
 
+  // Pins the key derivation itself. Derived keys must never drift with the
+  // cryptography backend in use, or every library already in a bucket becomes
+  // unreadable; this caught the Android-only empty-HMAC-key crash indirectly.
+  test('subkeys derived from a master key are stable across releases', () async {
+    final vault = await Vault.fromMasterKey(List.generate(32, (i) => i));
+    final plaintext = utf8.encode('happy drive vector');
+
+    expect(vault.photoIdFor(plaintext), '259703ff7bea199be78fd1ca2f604e4b');
+    expect(
+      utf8.decode(
+        await vault.open(
+          base64Decode(
+            'Abbpp7JdFDkGxwJPpl2ABCo0ekb0XyK6JZgVAT88DzbFffDJT+NNNhrdT0Uv85w=',
+          ),
+          context: 'v1/o/ab/cd',
+        ),
+      ),
+      'happy drive vector',
+    );
+  });
+
   test('default parameters meet the OWASP Argon2id baseline', () {
     const p = KdfParams();
     expect(p.memoryKiB, greaterThanOrEqualTo(19456));

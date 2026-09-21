@@ -50,7 +50,6 @@ class CredentialStore {
   const CredentialStore([this._storage = const FlutterSecureStorage()]);
 
   static const _account = 'account';
-  static const _hfToken = 'hf_token';
   String _masterKey(StoredAccount a) => 'master_key:${a.id}';
 
   Future<StoredAccount?> readAccount() async {
@@ -76,12 +75,6 @@ class CredentialStore {
 
   Future<void> forgetMasterKey(StoredAccount account) =>
       _storage.delete(key: _masterKey(account));
-
-  Future<String?> readHfToken() => _storage.read(key: _hfToken);
-
-  Future<void> saveHfToken(String? token) => token == null || token.isEmpty
-      ? _storage.delete(key: _hfToken)
-      : _storage.write(key: _hfToken, value: token);
 
   Future<void> forgetEverything() => _storage.deleteAll();
 }

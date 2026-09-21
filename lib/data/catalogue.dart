@@ -28,9 +28,6 @@ class PhotoRecord {
   final String? place;
   final String? country;
   final Map<String, dynamic>? weather;
-  final String? caption;
-  final List<String> tags;
-  final String? captionModel;
 
   const PhotoRecord({
     required this.id,
@@ -48,9 +45,6 @@ class PhotoRecord {
     this.place,
     this.country,
     this.weather,
-    this.caption,
-    this.tags = const [],
-    this.captionModel,
   });
 
   bool get hasLocation => lat != null && lng != null;
@@ -75,9 +69,6 @@ class PhotoRecord {
     'place': ?place,
     'country': ?country,
     'weather': ?weather,
-    'caption': ?caption,
-    if (tags.isNotEmpty) 'tags': tags,
-    'captionModel': ?captionModel,
   };
 
   factory PhotoRecord.fromJson(Map<String, dynamic> j) => PhotoRecord(
@@ -102,9 +93,6 @@ class PhotoRecord {
     place: j['place'] as String?,
     country: j['country'] as String?,
     weather: (j['weather'] as Map?)?.cast<String, dynamic>(),
-    caption: j['caption'] as String?,
-    tags: (j['tags'] as List?)?.cast<String>() ?? const [],
-    captionModel: j['captionModel'] as String?,
   );
 
   /// Applies a patch: present keys overwrite, `null` values clear the field.
@@ -209,14 +197,7 @@ class Catalogue {
     }
   }
 
-  static const _enrichment = {
-    'place',
-    'country',
-    'weather',
-    'caption',
-    'tags',
-    'captionModel',
-  };
+  static const _enrichment = {'place', 'country', 'weather'};
 
   /// Applies ops in a deterministic order, so every device reaches the same
   /// state from the same set of ops. Returns the ids that changed.

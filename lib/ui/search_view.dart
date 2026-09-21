@@ -22,13 +22,11 @@ class _SearchViewState extends State<SearchView> {
   List<PhotoRecord> _results = const [];
 
   static const _suggestions = [
-    'beach',
-    'sunset',
-    'food',
-    'dog',
     'rain',
     'snow',
-    'birthday',
+    'clear sky',
+    'December',
+    'Saturday',
     '2025',
   ];
 
@@ -66,8 +64,6 @@ class _SearchViewState extends State<SearchView> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final settings = widget.session.settings;
-    final captionsPending = widget.session.db.jobCount(JobKind.caption);
     return Column(
       children: [
         Padding(
@@ -77,7 +73,7 @@ class _SearchViewState extends State<SearchView> {
             onChanged: _onChanged,
             textInputAction: TextInputAction.search,
             decoration: InputDecoration(
-              hintText: 'Search places, things, dates…',
+              hintText: 'Search places, weather, dates…',
               prefixIcon: const Icon(Icons.search),
               suffixIcon: _query.text.isEmpty
                   ? null
@@ -95,7 +91,7 @@ class _SearchViewState extends State<SearchView> {
         Expanded(
           child: _query.text.trim().isEmpty
               ? ListView(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 112),
                   children: [
                     Wrap(
                       spacing: 8,
@@ -109,21 +105,10 @@ class _SearchViewState extends State<SearchView> {
                       ],
                     ),
                     const SizedBox(height: 24),
-                    if (!settings.aiCaptions)
-                      Card(
-                        child: ListTile(
-                          leading: const Icon(Icons.auto_awesome_outlined),
-                          title: const Text('Search by what\'s in your photos'),
-                          subtitle: const Text(
-                            'Turn on AI descriptions in Settings to search for things like "dog on a beach".',
-                          ),
-                        ),
-                      )
-                    else if (captionsPending > 0)
-                      Text(
-                        'Describing $captionsPending photos. Results get better as that finishes.',
-                        style: theme.textTheme.bodySmall,
-                      ),
+                    Text(
+                      'Searches file names, places, weather and dates.',
+                      style: theme.textTheme.bodySmall,
+                    ),
                   ],
                 )
               : _results.isEmpty
@@ -134,7 +119,7 @@ class _SearchViewState extends State<SearchView> {
                   ),
                 )
               : GridView.builder(
-                  padding: const EdgeInsets.all(2),
+                  padding: const EdgeInsets.fromLTRB(13, 2, 13, 112),
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                     maxCrossAxisExtent: 140,
                     mainAxisSpacing: 2,

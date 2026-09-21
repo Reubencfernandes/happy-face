@@ -26,6 +26,11 @@ class Settings {
       Compression.parse(_db.getSetting('compression'));
   set compression(Compression c) => _db.setSetting('compression', c.name);
 
+  /// Ask which quality to use each time photos are backed up by hand.
+  /// Off means [compression] is used without asking.
+  bool get askQuality => _db.getSetting('askQuality') != 'false';
+  set askQuality(bool v) => _db.setSetting('askQuality', '$v');
+
   bool get autoBackup => _db.getSetting('autoBackup') == 'true';
   set autoBackup(bool v) => _db.setSetting('autoBackup', '$v');
 
@@ -34,61 +39,6 @@ class Settings {
 
   bool get weather => _db.getSetting('weather') == 'true';
   set weather(bool v) => _db.setSetting('weather', '$v');
-
-  bool get aiCaptions => _db.getSetting('aiCaptions') == 'true';
-  set aiCaptions(bool v) => _db.setSetting('aiCaptions', '$v');
-
-  String get aiModel => _db.getSetting('aiModel') ?? defaultAiModel;
-  set aiModel(String v) =>
-      _db.setSetting('aiModel', v.trim().isEmpty ? null : v.trim());
-
-  int get aiDailyLimit =>
-      int.tryParse(_db.getSetting('aiDailyLimit') ?? '') ?? 50;
-  set aiDailyLimit(int v) => _db.setSetting('aiDailyLimit', '$v');
-
-  bool get aiWholeLibrary => _db.getSetting('aiWholeLibrary') == 'true';
-  set aiWholeLibrary(bool v) => _db.setSetting('aiWholeLibrary', '$v');
-
-  /// Photos uploaded before this are only described with [aiWholeLibrary].
-  DateTime? get aiEnabledAt {
-    final ms = int.tryParse(_db.getSetting('aiEnabledAt') ?? '');
-    return ms == null
-        ? null
-        : DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
-  }
-
-  set aiEnabledAt(DateTime? t) => _db.setSetting(
-    'aiEnabledAt',
-    t?.toUtc().millisecondsSinceEpoch.toString(),
-  );
-
-  /// Why descriptions stopped (no credits, bad token, bad model), if they did.
-  String? get aiPausedReason => _db.getSetting('aiPaused');
-  set aiPausedReason(String? reason) => _db.setSetting('aiPaused', reason);
-
-  int aiUsedToday(DateTime now) => _count('aiDay', _day(now));
-  int aiUsedThisMonth(DateTime now) =>
-      _count('aiMonth', _day(now).substring(0, 7));
-
-  void recordAiUse(DateTime now) {
-    _bump('aiDay', _day(now));
-    _bump('aiMonth', _day(now).substring(0, 7));
-  }
-
-  static String _day(DateTime t) =>
-      t.toUtc().toIso8601String().substring(0, 10);
-
-  int _count(String key, String period) {
-    final raw = _db.getSetting(key)?.split('|');
-    return raw != null && raw.length == 2 && raw[0] == period
-        ? int.tryParse(raw[1]) ?? 0
-        : 0;
-  }
-
-  void _bump(String key, String period) =>
-      _db.setSetting(key, '$period|${_count(key, period) + 1}');
-
-  static const defaultAiModel = 'Qwen/Qwen3.8-27B';
 }
 
 /// Everything needed while a library is unlocked, plus the state the UI
@@ -385,7 +335,7 @@ class Session extends ChangeNotifier {
     }
   }
 
-  /// Records enrichment (place, weather, caption) for many photos in one
+  /// Records enrichment (place, weather) for many photos in one
   /// catalogue entry. Photos deleted in the meantime are ignored.
   Future<void> patchPhotos(Map<String, Map<String, dynamic>> patches) async {
     if (patches.isEmpty) return;

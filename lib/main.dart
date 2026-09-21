@@ -12,6 +12,7 @@ import 'ui/connect_screen.dart';
 import 'ui/home_screen.dart';
 import 'ui/passphrase_screen.dart';
 import 'ui/theme.dart';
+import 'ui/welcome_screen.dart';
 
 void main() {
   // cryptography_flutter registers itself, routing AES-GCM through the
@@ -141,8 +142,10 @@ class _HappyDriveAppState extends State<HappyDriveApp> {
       title: 'Happy Drive',
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: _messenger,
-      theme: buildTheme(Brightness.light),
-      darkTheme: buildTheme(Brightness.dark),
+      theme: buildTheme(),
+      darkTheme: buildTheme(),
+      // One look, whatever the phone is set to.
+      themeMode: ThemeMode.dark,
       home: AnimatedSwitcher(
         duration: const Duration(milliseconds: 250),
         child: switch (_stage) {
@@ -150,7 +153,7 @@ class _HappyDriveAppState extends State<HappyDriveApp> {
             key: ValueKey(_stage),
             body: const Center(child: CircularProgressIndicator()),
           ),
-          _Stage.connect => ConnectScreen(
+          _Stage.connect => WelcomeScreen(
             key: const ValueKey('connect'),
             previous: _account,
             clientFactory: widget.clientFactory,

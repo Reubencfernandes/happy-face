@@ -286,12 +286,17 @@ class Uploader {
     }
 
     final bytes = await source.read();
-    final mime = sniffImageMime(bytes);
-    if (mime == null) {
-      throw const FormatException(
-        'Not a supported photo (JPEG, PNG, HEIC, WebP, GIF).',
+    if (bytes.length > maxUploadBytes) {
+      throw FormatException(
+        'This file is ${(bytes.length / 1024 / 1024).round()} MB. Happy Drive '
+        'uploads each file in one go, so ${maxUploadBytes ~/ (1024 * 1024)} MB '
+        'is the most it can handle.',
       );
     }
+    // Photos, videos and anything else: unknown bytes are stored as they are
+    // rather than turned away.
+    final mime = sniffMime(bytes, name: source.name);
+    final isImage = mime.startsWith('image/');
 
     // The id comes from the untouched original, so the same photo dedupes
     // whatever compression was chosen.
@@ -309,11 +314,17 @@ class Uploader {
     inFlight[id] = staged.done.future;
 
     try {
-      final meta = (await readPhotoMetadata(bytes)).orElse(source.known);
+      // Only photos carry EXIF; everything else takes the date and place
+      // the gallery or the file itself gave us.
+      final meta = isImage
+          ? (await readPhotoMetadata(bytes)).orElse(source.known)
+          : source.known;
       var stored = bytes;
       var storedMime = mime;
       var level = Compression.original;
-      if (compression != Compression.original && mime != 'image/gif') {
+      if (isImage &&
+          compression != Compression.original &&
+          mime != 'image/gif') {
         final smaller = await codec.compress(bytes, compression);
         if (smaller != null && smaller.length < bytes.length) {
           stored = smaller;
@@ -321,8 +332,11 @@ class Uploader {
           level = compression;
         }
       }
+      // Videos come with a thumbnail from the phone; a file that has none
+      // gets an icon in the grid instead.
       final thumb =
-          await source.thumbnail?.call() ?? await codec.thumbnail(bytes);
+          await source.thumbnail?.call() ??
+          (isImage ? await codec.thumbnail(bytes) : null);
 
       final originalKey = BucketLayout.original(id);
       await bucket.putObject(
@@ -359,15 +373,18 @@ class Uploader {
   }
 
   void _enqueueEnrichment(PhotoRecord r) {
-    if (r.hasLocation) {
-      db.enqueueJob(r.id, JobKind.place);
-      db.enqueueJob(r.id, JobKind.weather);
-    }
-    db.enqueueJob(r.id, JobKind.caption);
+    if (!r.hasLocation) return;
+    db.enqueueJob(r.id, JobKind.place);
+    db.enqueueJob(r.id, JobKind.weather);
   }
 
+  /// The most one file can be, because each upload is a single request.
+  static const maxUploadBytes = 256 * 1024 * 1024;
+
   static String _cleanName(String name, String mime) {
-    var n = name.trim().isEmpty ? 'photo' : name.trim();
+    var n = name.trim().isEmpty
+        ? (mime.startsWith('image/') ? 'photo' : 'file')
+        : name.trim();
     if (n.length > 200) n = n.substring(n.length - 200);
     // A compressed HEIC is now a JPEG; keep the name honest.
     if (mime == 'image/jpeg' &&

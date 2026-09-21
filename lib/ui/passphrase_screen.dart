@@ -6,6 +6,8 @@ import '../app/credentials.dart';
 import '../crypto/vault.dart';
 import '../data/bucket_layout.dart';
 import '../s3/s3_client.dart';
+import 'auth_page.dart';
+import 'theme.dart';
 
 class PassphraseScreen extends StatefulWidget {
   final StoredAccount account;
@@ -110,194 +112,133 @@ class _PassphraseScreenState extends State<PassphraseScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Back',
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _busy ? null : widget.onBack,
-        ),
-      ),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: Form(
-              key: _form,
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
-                children: [
-                  Icon(
-                    _unlock
-                        ? Icons.lock_open_rounded
-                        : Icons.shield_moon_outlined,
-                    size: 48,
-                    color: theme.colorScheme.primary,
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    _unlock ? 'Welcome back' : 'Create your passphrase',
-                    style: theme.textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _unlock
-                        ? 'Enter the passphrase you chose when you set up Happy Drive for ${widget.account.namespace}.'
-                        : 'Every photo is locked with this passphrase before it leaves your phone. '
-                              'Not even Hugging Face can see them.',
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 28),
-                  TextFormField(
-                    controller: _pass,
-                    enabled: !_busy,
-                    obscureText: _obscure,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    autofocus: true,
-                    textInputAction: _unlock
-                        ? TextInputAction.done
-                        : TextInputAction.next,
-                    onFieldSubmitted: (_) => _unlock ? _submit() : null,
-                    onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      labelText: 'Passphrase',
-                      prefixIcon: const Icon(Icons.password),
-                      suffixIcon: IconButton(
-                        tooltip: _obscure
-                            ? 'Show passphrase'
-                            : 'Hide passphrase',
-                        icon: Icon(
-                          _obscure
-                              ? Icons.visibility_outlined
-                              : Icons.visibility_off_outlined,
-                        ),
-                        onPressed: () => setState(() => _obscure = !_obscure),
-                      ),
-                      helperText: _unlock ? null : _strengthHint(_pass.text),
-                    ),
-                    validator: (v) {
-                      if (v == null || v.isEmpty) return 'Enter a passphrase';
-                      if (!_unlock && v.length < 10) {
-                        return 'Use at least 10 characters. A short sentence works well.';
-                      }
-                      return null;
-                    },
-                  ),
-                  if (!_unlock) ...[
-                    const SizedBox(height: 14),
-                    TextFormField(
-                      controller: _confirm,
-                      enabled: !_busy,
-                      obscureText: _obscure,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      textInputAction: TextInputAction.done,
-                      decoration: const InputDecoration(
-                        labelText: 'Type it again',
-                        prefixIcon: Icon(Icons.password),
-                      ),
-                      validator: (v) => v == _pass.text
-                          ? null
-                          : 'The passphrases don\'t match',
-                    ),
-                    const SizedBox(height: 18),
-                    Material(
-                      // A Material (not a decorated box) so the checkbox's
-                      // ink ripple stays visible.
-                      color: theme.colorScheme.errorContainer.withValues(
-                        alpha: 0.5,
-                      ),
-                      borderRadius: BorderRadius.circular(14),
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.warning_amber_rounded,
-                                  color: theme.colorScheme.error,
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    'There is no "forgot passphrase"',
-                                    style: theme.textTheme.titleSmall,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            const Text(
-                              'If you forget it, your backed-up photos can never be opened again, by you, '
-                              'by us, or by Hugging Face. Write it down somewhere safe.',
-                            ),
-                            CheckboxListTile(
-                              contentPadding: EdgeInsets.zero,
-                              value: _understood,
-                              onChanged: _busy
-                                  ? null
-                                  : (v) => setState(
-                                      () => _understood = v ?? false,
-                                    ),
-                              title: const Text(
-                                'I understand and have saved my passphrase',
-                              ),
-                              controlAffinity: ListTileControlAffinity.leading,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                  if (_error != null) ...[
-                    const SizedBox(height: 14),
-                    Semantics(
-                      liveRegion: true,
-                      child: Text(
-                        _error!,
-                        style: TextStyle(color: theme.colorScheme.error),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 22),
-                  FilledButton(
-                    onPressed: _busy ? null : _submit,
-                    child: _busy
-                        ? Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.5,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Flexible(
-                                child: Text(
-                                  _unlock
-                                      ? 'Unlocking…'
-                                      : 'Securing your library…',
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          )
-                        : Text(_unlock ? 'Unlock' : 'Create library'),
-                  ),
-                ],
+    return Form(
+      key: _form,
+      child: AuthPage(
+        title: _unlock ? 'Hey,\nWelcome\nBack' : 'Create\nYour passphrase',
+        subtitle: _unlock
+            ? 'Enter the passphrase you chose when you set up Happy Drive '
+                  'for ${widget.account.namespace}.'
+            : 'Every photo is locked with this passphrase before it leaves '
+                  'your phone. Not even Hugging Face can see them.',
+        onBack: _busy ? null : widget.onBack,
+        children: [
+          TextFormField(
+            controller: _pass,
+            enabled: !_busy,
+            obscureText: _obscure,
+            autocorrect: false,
+            enableSuggestions: false,
+            autofocus: true,
+            textInputAction: _unlock
+                ? TextInputAction.done
+                : TextInputAction.next,
+            onFieldSubmitted: (_) => _unlock ? _submit() : null,
+            onChanged: (_) => setState(() {}),
+            decoration: authField(
+              hint: 'Passphrase',
+              icon: Icons.lock_outline,
+              helper: _unlock ? null : _strengthHint(_pass.text),
+              suffix: IconButton(
+                tooltip: _obscure ? 'Show passphrase' : 'Hide passphrase',
+                iconSize: 19,
+                color: inkMuted,
+                icon: Icon(
+                  _obscure
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+                onPressed: () => setState(() => _obscure = !_obscure),
               ),
             ),
+            validator: (v) {
+              if (v == null || v.isEmpty) return 'Enter a passphrase';
+              if (!_unlock && v.length < 10) {
+                return 'Use at least 10 characters. A short sentence works well.';
+              }
+              return null;
+            },
           ),
-        ),
+          if (!_unlock) ...[
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _confirm,
+              enabled: !_busy,
+              obscureText: _obscure,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.done,
+              decoration: authField(
+                hint: 'Type it again',
+                icon: Icons.lock_outline,
+              ),
+              validator: (v) =>
+                  v == _pass.text ? null : 'The passphrases don\'t match',
+            ),
+            const SizedBox(height: 18),
+            Material(
+              // A Material (not a decorated box) so the checkbox's ink
+              // ripple stays visible.
+              color: theme.colorScheme.error.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(14),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.warning_amber_rounded,
+                          size: 20,
+                          color: theme.colorScheme.error,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'There is no "forgot passphrase"',
+                            style: theme.textTheme.titleSmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'If you forget it, your backed-up photos can never be '
+                      'opened again, by you, by us, or by Hugging Face. Write '
+                      'it down somewhere safe.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: inkMuted,
+                        height: 1.4,
+                      ),
+                    ),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: _understood,
+                      onChanged: _busy
+                          ? null
+                          : (v) => setState(() => _understood = v ?? false),
+                      title: Text(
+                        'I understand and have saved my passphrase',
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          if (_error != null)
+            AuthBanner(icon: Icons.error_outline, text: _error!),
+          const SizedBox(height: 22),
+          AuthButton(
+            label: _unlock ? 'Unlock' : 'Create library',
+            busy: _busy,
+            busyLabel: _unlock ? 'Unlocking…' : 'Securing your library…',
+            onPressed: _submit,
+          ),
+        ],
       ),
     );
   }
