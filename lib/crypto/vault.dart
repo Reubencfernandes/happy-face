@@ -129,7 +129,7 @@ class Vault {
         secretKey: kek,
         aad: utf8.encode('happydrive:keys'),
       );
-      return fromMasterKey(master);
+      return await fromMasterKey(master);
     } on SecretBoxAuthenticationError {
       throw WrongPassphraseException();
     }
