@@ -116,9 +116,22 @@ void main() {
     await tester.tap(find.text('Get started'));
     await pumpUntil(tester, find.text('Connect'));
     expect(find.text('Let\'s get\nStarted'), findsOneWidget);
-    // A new library is named for the user rather than sharing one name.
-    expect(find.textContaining('New private bucket:'), findsOneWidget);
+    // The bucket is asked about up front, starting on a new one.
+    expect(find.text('Where the photos go'), findsOneWidget);
+    expect(find.text('New bucket'), findsOneWidget);
+    expect(
+      find.text('A new private bucket, made in your account'),
+      findsOneWidget,
+    );
+    // A new library is named for the user rather than sharing one name, and
+    // that name is on screen in the field, ready to be changed.
     expect(find.text('happy-drive'), findsNothing);
+    expect(
+      tester
+          .widgetList<EditableText>(find.byType(EditableText))
+          .map((e) => e.controller.text),
+      contains(matches(RegExp(r'^[a-z]+-[a-z]+-\d{3}$'))),
+    );
     expect(tester.takeException(), isNull);
   });
 

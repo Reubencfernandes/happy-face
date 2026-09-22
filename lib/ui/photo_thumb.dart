@@ -179,39 +179,57 @@ class _PhotoThumbState extends State<PhotoThumb> {
 
   /// A corner mark so videos and files are obvious in a grid of photos.
   Widget _kindBadge() => Positioned(
-    left: 4,
-    bottom: 4,
+    left: 5,
+    bottom: 5,
     child: Semantics(
       label: widget.item.kind == MediaKind.video ? 'Video' : 'File',
-      child: Icon(
-        widget.item.kind == MediaKind.video
-            ? Icons.play_circle_fill
+      child: _Chip(
+        icon: widget.item.kind == MediaKind.video
+            ? Icons.play_arrow_rounded
             : Icons.attach_file,
-        size: 18,
-        color: Colors.white,
-        shadows: const [Shadow(blurRadius: 4, color: Colors.black87)],
       ),
     ),
   );
 
   Widget _badge(ColorScheme scheme) {
-    final (icon, label) = switch (widget.item.state) {
-      BackupState.localOnly => (Icons.cloud_upload_outlined, 'Not backed up'),
-      BackupState.cloudOnly => (Icons.cloud_outlined, 'In cloud only'),
-      BackupState.backedUp => (Icons.cloud_done_outlined, 'Backed up'),
+    // A white glyph with a drop shadow disappears into a bright photo, and
+    // three outline clouds that differ by a few pixels are the same mark at
+    // thumbnail size. Each one now sits on its own dark chip, and the one
+    // that wants doing is the only one with colour in it.
+    final (icon, label, tint) = switch (widget.item.state) {
+      BackupState.localOnly => (
+        Icons.arrow_upward_rounded,
+        'Not backed up',
+        scheme.primary,
+      ),
+      BackupState.cloudOnly => (Icons.cloud_rounded, 'In cloud only', null),
+      BackupState.backedUp => (Icons.cloud_done_rounded, 'Backed up', null),
     };
     return Positioned(
-      right: 4,
-      bottom: 4,
+      right: 5,
+      bottom: 5,
       child: Semantics(
         label: label,
-        child: Icon(
-          icon,
-          size: 16,
-          color: Colors.white,
-          shadows: const [Shadow(blurRadius: 4, color: Colors.black87)],
-        ),
+        child: _Chip(icon: icon, tint: tint),
       ),
     );
   }
+}
+
+/// A corner mark that reads against anything: a small dark rounded square
+/// with one glyph in it.
+class _Chip extends StatelessWidget {
+  final IconData icon;
+  final Color? tint;
+  const _Chip({required this.icon, this.tint});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(3),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(7),
+    ),
+    child: Icon(icon, size: 14, color: tint ?? Colors.white),
+  );
 }

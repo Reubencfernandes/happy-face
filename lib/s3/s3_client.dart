@@ -181,12 +181,17 @@ class BucketClient {
   /// [ifNoneMatch] `'*'` refuses to overwrite an existing object; [ifMatch]
   /// only overwrites the given version. Both throw an [S3Exception] whose
   /// [S3Exception.isPreconditionFailed] is true when the condition fails.
+  ///
+  /// [onSent] is called as the body goes out, which is the only sign of life
+  /// a large file gives: one upload is one request, so without it a 200 MB
+  /// video looks frozen for minutes. A retry starts its count again from 0.
   Future<String?> putObject(
     String key,
     Uint8List bytes, {
     String contentType = 'application/octet-stream',
     String? ifNoneMatch,
     String? ifMatch,
+    void Function(int sent, int total)? onSent,
   }) async {
     validateKey(key);
     final r = await _send(
@@ -198,6 +203,7 @@ class BucketClient {
         'if-none-match': ?ifNoneMatch,
         'if-match': ?ifMatch,
       },
+      onSent: onSent,
     );
     _check(r);
     return r.headers['etag'];
@@ -205,11 +211,51 @@ class BucketClient {
 
   /// Downloads [key]. The gateway usually answers with a redirect to a CDN;
   /// that hop is followed without the Authorization header.
-  Future<Uint8List> getObject(String key) async {
+  ///
+  /// [onReceived] is called as the bytes arrive, so a viewer can show a real
+  /// bar while a video comes down. `total` is null if the server won't say.
+  ///
+  /// A download is retried as a whole — request and body together — because
+  /// a stream that dies half way through is the usual way a big file fails,
+  /// and half a file is no use. The bar goes back to zero when that happens.
+  Future<Uint8List> getObject(
+    String key, {
+    void Function(int received, int? total)? onReceived,
+  }) async {
     validateKey(key);
+    for (var attempt = 0; ; attempt++) {
+      final last = attempt + 1 >= retry.maxAttempts;
+      try {
+        return await _download(key, onReceived);
+      } on _Retryable catch (e) {
+        if (last) throw e.error;
+        await sleep(e.after ?? retry.delayFor(attempt, _random));
+        continue;
+      } on SocketException {
+        if (last) rethrow;
+      } on TimeoutException {
+        if (last) rethrow;
+      } on http.ClientException {
+        if (last) rethrow;
+      }
+      await sleep(retry.delayFor(attempt, _random));
+    }
+  }
+
+  Future<Uint8List> _download(
+    String key,
+    void Function(int received, int? total)? onReceived,
+  ) async {
     var current = _uri(key: key);
-    var r = await _send('GET', current, followRedirects: false);
+    // One attempt each: the loop above owns the retrying.
+    var r = await _stream(
+      'GET',
+      current,
+      followRedirects: false,
+      retries: false,
+    );
     for (var hop = 0; hop < 5 && _isRedirect(r.statusCode); hop++) {
+      await r.stream.drain<void>();
       final location = r.headers['location'];
       if (location == null) {
         throw S3Exception(
@@ -223,15 +269,36 @@ class BucketClient {
         throw S3Exception(r.statusCode, 'InsecureRedirect', 'Refusing $next');
       }
       // Credentials are never forwarded to the storage host.
-      r = await _withRetry(() async {
-        final req = http.Request('GET', next)..followRedirects = false;
-        return http.Response.fromStream(
-          await _http.send(req).timeout(const Duration(seconds: 60)),
-        ).timeout(const Duration(minutes: 5));
-      });
+      final req = http.Request('GET', next)..followRedirects = false;
+      r = await _http.send(req).timeout(const Duration(seconds: 60));
     }
-    _check(r);
-    return r.bodyBytes;
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      // An error body is small; read it so the message says what went wrong.
+      final response = await http.Response.fromStream(r);
+      final error = _errorOf(response);
+      throw _worthRetrying(response.statusCode)
+          ? _Retryable(error, _retryAfter(response))
+          : error;
+    }
+    return _collect(r, onReceived);
+  }
+
+  /// Reads a response body, reporting as it goes. The timeout is per chunk,
+  /// so a slow but moving download is never cut off.
+  static Future<Uint8List> _collect(
+    http.StreamedResponse response,
+    void Function(int received, int? total)? onReceived,
+  ) async {
+    final total = response.contentLength;
+    final builder = BytesBuilder(copy: false);
+    onReceived?.call(0, total);
+    await for (final chunk in response.stream.timeout(
+      const Duration(seconds: 60),
+    )) {
+      builder.add(chunk);
+      onReceived?.call(builder.length, total);
+    }
+    return builder.takeBytes();
   }
 
   Future<ObjectInfo?> headObject(String key) async {
@@ -332,15 +399,40 @@ class BucketClient {
     Uint8List? body,
     Map<String, String> headers = const {},
     bool followRedirects = true,
+    void Function(int sent, int total)? onSent,
+  }) async {
+    final timeout = _timeoutFor(body?.length ?? 0);
+    return http.Response.fromStream(
+      await _stream(
+        method,
+        uri,
+        body: body,
+        headers: headers,
+        followRedirects: followRedirects,
+        onSent: onSent,
+      ),
+    ).timeout(timeout);
+  }
+
+  /// Signs, sends and retries, handing back the response before its body has
+  /// been read — which is what lets a download report progress.
+  Future<http.StreamedResponse> _stream(
+    String method,
+    Uri uri, {
+    Uint8List? body,
+    Map<String, String> headers = const {},
+    bool followRedirects = true,
+    void Function(int sent, int total)? onSent,
+    bool retries = true,
   }) {
     final payload = body ?? Uint8List(0);
     final payloadHash = body == null ? emptyPayloadHash : sha256Hex(payload);
-    // Allow slow mobile uplinks: a minute plus ~50 KB/s.
-    final timeout = Duration(seconds: 60 + payload.length ~/ 50000);
-    return _withRetry(() async {
-      final req = http.Request(method, uri)
-        ..followRedirects = followRedirects
-        ..bodyBytes = payload;
+    final timeout = _timeoutFor(payload.length);
+    Future<http.StreamedResponse> send() async {
+      // Each attempt gets its own request, so a retry sends the body again
+      // from the beginning and reports it again from zero.
+      final req = _BodyRequest(method, uri, payload, onSent)
+        ..followRedirects = followRedirects;
       req.headers.addAll(
         signer.sign(
           method: method,
@@ -350,24 +442,36 @@ class BucketClient {
           now: clock(),
         ),
       );
-      return http.Response.fromStream(
-        await _http.send(req).timeout(timeout),
-      ).timeout(timeout);
-    });
+      return _http.send(req).timeout(timeout);
+    }
+
+    return retries ? _withRetry(send) : send();
   }
 
-  Future<http.Response> _withRetry(Future<http.Response> Function() run) async {
+  /// Allow slow mobile uplinks: a minute plus ~50 KB/s.
+  static Duration _timeoutFor(int bytes) =>
+      Duration(seconds: 60 + bytes ~/ 50000);
+
+  static bool _worthRetrying(int status) =>
+      const [429, 500, 502, 503, 504].contains(status);
+
+  /// What the server asked us to wait, when it asked for something sane.
+  static Duration? _retryAfter(http.BaseResponse r) {
+    final seconds = int.tryParse(r.headers['retry-after'] ?? '');
+    return seconds != null && seconds <= 60 ? Duration(seconds: seconds) : null;
+  }
+
+  Future<http.StreamedResponse> _withRetry(
+    Future<http.StreamedResponse> Function() run,
+  ) async {
     for (var attempt = 0; ; attempt++) {
       final last = attempt + 1 >= retry.maxAttempts;
       try {
         final r = await run();
-        if (!last && const [429, 500, 502, 503, 504].contains(r.statusCode)) {
-          final after = int.tryParse(r.headers['retry-after'] ?? '');
-          await sleep(
-            after != null && after <= 60
-                ? Duration(seconds: after)
-                : retry.delayFor(attempt, _random),
-          );
+        if (!last && _worthRetrying(r.statusCode)) {
+          // Let go of the body before asking again.
+          await r.stream.drain<void>();
+          await sleep(_retryAfter(r) ?? retry.delayFor(attempt, _random));
           continue;
         }
         return r;
@@ -384,6 +488,10 @@ class BucketClient {
 
   void _check(http.Response r) {
     if (r.statusCode >= 200 && r.statusCode < 300) return;
+    throw _errorOf(r);
+  }
+
+  S3Exception _errorOf(http.Response r) {
     var code = '', message = '';
     try {
       final error = XmlDocument.parse(
@@ -394,6 +502,44 @@ class BucketClient {
     } catch (_) {
       // Not an XML error body.
     }
-    throw S3Exception(r.statusCode, code, message);
+    return S3Exception(r.statusCode, code, message);
+  }
+}
+
+/// A download that failed in a way worth trying again, with what the server
+/// asked us to wait and the error to report if we run out of goes.
+class _Retryable implements Exception {
+  final S3Exception error;
+  final Duration? after;
+  const _Retryable(this.error, this.after);
+}
+
+/// A request whose body is handed over in chunks, so the caller can watch it
+/// leave. [http.Request] finalizes to a single blob and says nothing.
+class _BodyRequest extends http.BaseRequest {
+  final Uint8List body;
+  final void Function(int sent, int total)? onSent;
+
+  /// 64 KiB: small enough that the bar moves on a slow uplink, large enough
+  /// that the callback isn't the expensive part of an upload.
+  static const _chunk = 64 * 1024;
+
+  _BodyRequest(super.method, super.url, this.body, this.onSent) {
+    contentLength = body.length;
+  }
+
+  @override
+  http.ByteStream finalize() {
+    super.finalize();
+    return http.ByteStream(_chunks());
+  }
+
+  Stream<List<int>> _chunks() async* {
+    if (body.isEmpty) return;
+    for (var start = 0; start < body.length; start += _chunk) {
+      final end = start + _chunk > body.length ? body.length : start + _chunk;
+      yield Uint8List.sublistView(body, start, end);
+      onSent?.call(end, body.length);
+    }
   }
 }

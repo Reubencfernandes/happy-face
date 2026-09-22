@@ -132,4 +132,25 @@ void main() {
     expect(p.memoryKiB, greaterThanOrEqualTo(19456));
     expect(p.iterations, greaterThanOrEqualTo(2));
   });
+
+  test('a big payload still round-trips when sealed off-isolate', () async {
+    final vault = await Vault.fromMasterKey(List.filled(32, 11));
+    final big = Uint8List(17 * 1024 * 1024);
+    for (var i = 0; i < big.length; i += 4096) {
+      big[i] = i % 251;
+    }
+    final sealed = await vault.seal(big, context: 'v1/o/ab/big');
+    final back = await vault.open(sealed, context: 'v1/o/ab/big');
+    expect(back.length, big.length);
+    expect(back[0], big[0]);
+    expect(back[4096], big[4096]);
+    expect(back[big.length - 1], big[big.length - 1]);
+    // Bound to its name, still.
+    await expectLater(
+      vault.open(sealed, context: 'v1/o/ab/other'),
+      throwsA(isA<TamperedDataException>()),
+    );
+    // And the async id matches the sync one.
+    expect(await vault.photoIdForAsync(big), vault.photoIdFor(big));
+  });
 }

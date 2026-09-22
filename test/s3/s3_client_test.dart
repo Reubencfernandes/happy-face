@@ -175,33 +175,39 @@ void main() {
     expect(await c.isPubliclyListable(), isFalse);
   });
 
-  test('public exposure: an unsigned read counts even when listing is denied', () async {
-    final c = clientWith((r) async {
-      final signed = r.headers.containsKey('authorization');
-      // Listing is locked down, but the key envelope is served to anyone.
-      if (r.url.queryParameters.containsKey('list-type')) {
-        return http.Response('', signed ? 200 : 403);
-      }
-      return http.Response('{"format":"happydrive-keys"}', 200);
-    });
-    expect(await c.isPubliclyListable(), isFalse);
-    expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isTrue);
-  });
+  test(
+    'public exposure: an unsigned read counts even when listing is denied',
+    () async {
+      final c = clientWith((r) async {
+        final signed = r.headers.containsKey('authorization');
+        // Listing is locked down, but the key envelope is served to anyone.
+        if (r.url.queryParameters.containsKey('list-type')) {
+          return http.Response('', signed ? 200 : 403);
+        }
+        return http.Response('{"format":"happydrive-keys"}', 200);
+      });
+      expect(await c.isPubliclyListable(), isFalse);
+      expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isTrue);
+    },
+  );
 
-  test('public exposure: a listable bucket is caught before the probe', () async {
-    var unsignedReads = 0;
-    final c = clientWith((r) async {
-      if (r.url.queryParameters.containsKey('list-type')) {
-        return http.Response('<ListBucketResult/>', 200);
-      }
-      if (!r.headers.containsKey('authorization')) unsignedReads++;
-      return http.Response('', 404);
-    });
-    // A brand-new public bucket has no key envelope yet, so the listing
-    // check is the one that has to catch it.
-    expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isTrue);
-    expect(unsignedReads, 0, reason: 'listing already settled it');
-  });
+  test(
+    'public exposure: a listable bucket is caught before the probe',
+    () async {
+      var unsignedReads = 0;
+      final c = clientWith((r) async {
+        if (r.url.queryParameters.containsKey('list-type')) {
+          return http.Response('<ListBucketResult/>', 200);
+        }
+        if (!r.headers.containsKey('authorization')) unsignedReads++;
+        return http.Response('', 404);
+      });
+      // A brand-new public bucket has no key envelope yet, so the listing
+      // check is the one that has to catch it.
+      expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isTrue);
+      expect(unsignedReads, 0, reason: 'listing already settled it');
+    },
+  );
 
   test('public exposure: a private bucket reports clean', () async {
     final c = clientWith((r) async {
@@ -210,6 +216,94 @@ void main() {
           : http.Response('', 403);
     });
     expect(await c.isPubliclyExposed(probeKey: 'v1/keys'), isFalse);
+  });
+
+  test('an upload reports its body going out, in order', () async {
+    final sent = <(int, int)>[];
+    late int received;
+    final c = clientWith((r) async {
+      received = r.bodyBytes.length;
+      return http.Response('', 200, headers: {'etag': '"abc"'});
+    });
+    // Bigger than one chunk, so there is more than one report to make.
+    final body = Uint8List(200 * 1024);
+    await c.putObject('v1/o/ab/one', body, onSent: (n, t) => sent.add((n, t)));
+
+    expect(received, body.length, reason: 'the whole body still arrives');
+    expect(sent, isNotEmpty);
+    expect(sent.map((e) => e.$2), everyElement(body.length));
+    expect(
+      sent.map((e) => e.$1),
+      orderedEquals(List.of(sent.map((e) => e.$1))..sort()),
+    );
+    expect(sent.last.$1, body.length);
+  });
+
+  test(
+    'a download reports its bytes, with the size when the server says',
+    () async {
+      final got = <(int, int?)>[];
+      final body = Uint8List.fromList(List.filled(40000, 3));
+      final c = clientWith((r) async => http.Response.bytes(body, 200));
+      final bytes = await c.getObject(
+        'v1/o/ab/one',
+        onReceived: (n, t) {
+          got.add((n, t));
+        },
+      );
+
+      expect(bytes, body);
+      expect(got.first, (0, body.length));
+      expect(got.last.$1, body.length);
+    },
+  );
+
+  test('a retried download still returns the whole body', () async {
+    var attempts = 0;
+    final body = Uint8List.fromList(List.filled(1000, 7));
+    final sleeps = <Duration>[];
+    final c = clientWith((r) async {
+      attempts++;
+      if (attempts == 1) {
+        return http.Response('busy', 503, headers: {'retry-after': '3'});
+      }
+      if (attempts == 2) throw const SocketException('dropped');
+      return http.Response.bytes(body, 200);
+    }, sleeps: sleeps);
+
+    expect(await c.getObject('v1/o/ab/one'), body);
+    expect(attempts, 3);
+    expect(sleeps.first, const Duration(seconds: 3));
+    expect(sleeps, hasLength(2));
+  });
+
+  test('a download that dies half way through starts again', () async {
+    var attempts = 0;
+    final body = Uint8List.fromList(List.filled(1000, 5));
+    final progress = <int>[];
+    final c = BucketClient(
+      namespace: 'reuben',
+      bucket: 'happy-drive',
+      credentials: const S3Credentials('HFAKTEST', 'secret'),
+      clock: () => DateTime.utc(2026, 9, 15),
+      sleep: (_) async {},
+      client: MockClient.streaming((request, _) async {
+        attempts++;
+        // The first go hands over half the file and then breaks.
+        final stream = attempts == 1 ? _brokenStream(body) : _wholeStream(body);
+        return http.StreamedResponse(stream, 200, contentLength: body.length);
+      }),
+    );
+
+    final got = await c.getObject(
+      'v1/o/ab/one',
+      onReceived: (n, _) => progress.add(n),
+    );
+    expect(got, body, reason: 'half a file is no use');
+    expect(attempts, 2);
+    // The bar goes back to zero for the second attempt, which is honest.
+    expect(progress, contains(400));
+    expect(progress.last, body.length);
   });
 
   test('rejects keys the Hugging Face gateway forbids', () {
@@ -251,4 +345,14 @@ void main() {
       ),
     );
   });
+}
+
+/// Hands over part of the file and then drops the connection.
+Stream<List<int>> _brokenStream(Uint8List body) async* {
+  yield body.sublist(0, 400);
+  throw const SocketException('connection reset');
+}
+
+Stream<List<int>> _wholeStream(Uint8List body) async* {
+  yield body;
 }

@@ -127,6 +127,7 @@ class _HappyDriveAppState extends State<HappyDriveApp> {
     _go(_Stage.connect);
     if (session != null) {
       await session.photos.clearCache();
+      await session.media.sweep();
       session.dispose();
     }
     await BackgroundBackup.configure(

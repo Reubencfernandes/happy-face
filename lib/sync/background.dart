@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -17,6 +18,10 @@ const _taskName = 'happy-drive-backup';
 void backgroundDispatcher() {
   Workmanager().executeTask((task, input) async {
     try {
+      // This isolate gets its own plugin registrations: without them the
+      // native crypto and the path lookups here fall back to slow or absent
+      // implementations.
+      DartPluginRegistrant.ensureInitialized();
       await runBackgroundBackup();
     } catch (e) {
       debugPrint('Happy Drive background backup failed: $e');
@@ -44,6 +49,10 @@ Future<void> runBackgroundBackup({
   );
   try {
     if (!session.settings.autoBackup) return;
+    // The app itself may be backing up right now. Two backups over one
+    // database and one bucket duplicate work, and the Stop button in the app
+    // has no way to reach this one — so stand aside and try again next hour.
+    if (Session.backupRunningElsewhere(session.db)) return;
     await session.sync();
     final access = await session.scanGallery();
     if (!access.hasAccess) return;

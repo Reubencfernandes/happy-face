@@ -1,7 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Photos on the phone (Android 13+ and older versions). -->
+    <!-- Photos and videos on the phone (Android 13+ and older versions).
+         Both are listed: the library backs up videos too, and on Android 13+
+         images and video are separate permissions. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
     <!-- Without this, Android 10+ strips GPS from photos before apps see them. -->

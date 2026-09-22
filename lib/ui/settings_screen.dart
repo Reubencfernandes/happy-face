@@ -13,6 +13,7 @@ import '../s3/s3_client.dart';
 import '../sync/background.dart';
 import 'compression_sheet.dart';
 import 'format.dart';
+import 'skeleton.dart';
 import 'usage_bar.dart';
 
 /// What the last visibility check found. Buckets can be flipped to public on
@@ -735,6 +736,55 @@ class _StorageCard extends StatelessWidget {
         ),
     ];
 
+    // Nothing measured yet: show the shape of what's coming rather than a
+    // spinner. Measuring is one request per bucket, so this is a real wait,
+    // and the card doesn't jump when the numbers land.
+    if (usage == null && error == null) {
+      return Container(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: 0.45,
+          ),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Skeleton(width: 190, height: 30, radius: 10),
+            const SizedBox(height: 10),
+            const Skeleton(widthFactor: 0.62, height: 13, delay: 0.08),
+            const SizedBox(height: 18),
+            const Skeleton(height: 14, radius: 7, delay: 0.16),
+            const SizedBox(height: 16),
+            for (final (i, w) in const [0.5, 0.42, 0.34].indexed) ...[
+              Row(
+                children: [
+                  Skeleton(
+                    width: 10,
+                    height: 10,
+                    radius: 5,
+                    delay: 0.2 + i * 0.06,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Skeleton(
+                      widthFactor: w,
+                      height: 12,
+                      delay: 0.24 + i * 0.06,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
+            Text('Adding up what each bucket holds…', style: muted),
+          ],
+        ),
+      );
+    }
+
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 0),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
@@ -773,6 +823,8 @@ class _StorageCard extends StatelessWidget {
               IconButton(
                 tooltip: 'Measure again',
                 onPressed: onRefresh,
+                // A re-measure keeps the numbers already on screen, so this
+                // is the only hint that one is running.
                 icon: measuring
                     ? const SizedBox(
                         width: 18,
@@ -792,9 +844,7 @@ class _StorageCard extends StatelessWidget {
                 '${buckets.fold(0, (sum, b) => sum + b.objects)} files',
               ].join(' · '),
               style: muted,
-            )
-          else if (error == null)
-            Text('Adding up what each bucket holds…', style: muted),
+            ),
           const SizedBox(height: 14),
           if (error != null) ...[
             Text(

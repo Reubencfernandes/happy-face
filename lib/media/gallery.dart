@@ -76,15 +76,32 @@ class Gallery {
     return asset?.originBytes;
   }
 
+  /// The phone's own copy, for a player that wants a path rather than bytes.
+  /// Null when the photo lives in iCloud and isn't downloaded.
+  Future<File?> fileFor(String assetId) async {
+    final asset = await AssetEntity.fromId(assetId);
+    return asset?.file;
+  }
+
   Future<UploadSource?> sourceFor(String assetId) async {
     final asset = await AssetEntity.fromId(assetId);
     if (asset == null) return null;
     final latLng = await asset.latlngAsync();
     final created = asset.createDateTime;
+    // Asked of the file system before anything is read. Without it a 2 GB
+    // video is discovered to be 2 GB only once it is already in memory, by
+    // which time the app has been killed.
+    int? bytes;
+    try {
+      bytes = await asset.fileSize;
+    } catch (_) {
+      // Unknown: the uploader checks again once it has the file.
+    }
     double? coordinate(double? v) => v == null || v == 0 ? null : v;
     return UploadSource(
       name: await asset.titleAsync,
       assetId: asset.id,
+      size: bytes,
       read: () async {
         final bytes = await asset.originBytes;
         if (bytes == null) {

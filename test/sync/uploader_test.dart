@@ -327,16 +327,141 @@ void main() {
       final results = await uploader().run([
         for (var i = 0; i < 20; i++) source('p$i.jpg', photoBytes(i)),
       ], onProgress: progress.add);
+      expect(results, isNotEmpty);
       expect(results.every((r) => r.outcome == UploadOutcome.failed), isTrue);
-      expect(results.last.error, contains('Access denied'));
+      expect(results.first.error, contains('Access denied'));
       expect(
         bucket.count('PUT'),
         lessThanOrEqualTo(4),
         reason: 'workers stop after the first 403',
       );
-      expect(progress.last.done, isTrue);
+      // The photos never attempted are left alone rather than each being
+      // reported as its own failure.
+      expect(
+        results.length,
+        lessThan(20),
+        reason: 'the run stops instead of failing every photo',
+      );
+      expect(progress.last.active, isEmpty);
     },
   );
+
+  test('progress names the files in flight and follows their bytes', () async {
+    final progress = <UploadProgress>[];
+    final results = await uploader(batchSize: 2).run([
+      for (var i = 0; i < 6; i++) source('p$i.jpg', photoBytes(i)),
+    ], onProgress: progress.add);
+
+    expect(results.every((r) => r.outcome == UploadOutcome.uploaded), isTrue);
+    // Every file shows up by name while it is being worked on.
+    final named = {
+      for (final p in progress)
+        for (final a in p.active) a.name,
+    };
+    expect(named, containsAll([for (var i = 0; i < 6; i++) 'p$i.jpg']));
+
+    // Uploading is reached, and the bar has something to measure.
+    final uploading = [
+      for (final p in progress)
+        for (final a in p.active)
+          if (a.phase == UploadPhase.uploading) a,
+    ];
+    expect(uploading, isNotEmpty);
+    expect(uploading.every((a) => a.bytesTotal > 0), isTrue);
+    expect(
+      uploading.every((a) => a.fraction! >= 0 && a.fraction! <= 1),
+      isTrue,
+    );
+
+    // Bytes only ever go up, and the finished run counts what was sealed.
+    final bytes = progress.map((p) => p.bytesUploaded).toList();
+    expect(bytes, orderedEquals(List.of(bytes)..sort()));
+    // Bytes belong either to a file still going up or to the run's total,
+    // never to both, so the figure on screen can't overshoot the truth.
+    final sealed = bucket.objects.entries
+        .where((e) => e.key.startsWith('v1/o/') || e.key.startsWith('v1/t/'))
+        .fold(0, (sum, e) => sum + e.value.length);
+    expect(
+      progress.map((p) => p.bytesDone),
+      everyElement(lessThanOrEqualTo(sealed)),
+    );
+    expect(progress.last.bytesUploaded, sealed);
+    expect(progress.last.bytesDone, sealed);
+    expect(progress.last.active, isEmpty);
+    expect(progress.last.done, isTrue);
+  });
+
+  test('a failed file leaves nothing behind in the live list', () async {
+    bucket.intercept = (r) => r.method == 'PUT' && r.url.path.contains('/v1/o/')
+        ? http.Response('<Error><Code>InternalError</Code></Error>', 500)
+        : null;
+    final progress = <UploadProgress>[];
+    final results = await uploader().run([
+      source('broken.jpg', photoBytes(1)),
+    ], onProgress: progress.add);
+
+    expect(results.single.outcome, UploadOutcome.failed);
+    expect(progress.last.active, isEmpty);
+    expect(progress.last.failed, 1);
+    expect(progress.last.done, isTrue);
+  });
+
+  test('a file too big to hold is refused without being read', () async {
+    // The size the phone reports, not the bytes. Reading a 2 GB video to
+    // discover it is 2 GB is what killed the app on a real device.
+    var reads = 0;
+    final results = await uploader().run([
+      UploadSource(
+        name: 'holiday.mp4',
+        size: 2 * 1024 * 1024 * 1024,
+        read: () async {
+          reads++;
+          return Uint8List(0);
+        },
+      ),
+    ]);
+
+    expect(reads, 0, reason: 'the file is never opened');
+    expect(results.single.outcome, UploadOutcome.failed);
+    expect(results.single.error, contains('2048 MB'));
+    expect(results.single.error, contains('most it can handle'));
+    expect(bucket.objects, isEmpty);
+  });
+
+  test('a file whose size is unknown is still checked once read', () async {
+    final results = await uploader().run([
+      UploadSource(
+        name: 'mystery.bin',
+        read: () async => Uint8List(Uploader.maxUploadBytes + 1),
+      ),
+    ]);
+    expect(results.single.outcome, UploadOutcome.failed);
+    expect(results.single.error, contains('most it can handle'));
+  });
+
+  test('large files go up one at a time', () async {
+    // Four big ones at once is four times the memory, which is what the
+    // phone kills the app for.
+    var inFlight = 0, peak = 0;
+    final sources = [
+      for (var i = 0; i < 6; i++)
+        UploadSource(
+          name: 'big$i.jpg',
+          size: Uploader.largeFileBytes + 1,
+          read: () async {
+            inFlight++;
+            peak = peak > inFlight ? peak : inFlight;
+            await Future<void>.delayed(const Duration(milliseconds: 5));
+            inFlight--;
+            return photoBytes(i);
+          },
+        ),
+    ];
+    final results = await uploader().run(sources);
+
+    expect(results.every((r) => r.outcome == UploadOutcome.uploaded), isTrue);
+    expect(peak, 1, reason: 'never two big files in memory together');
+  });
 
   test('gallery metadata is used when the file has none', () async {
     final results = await uploader().run([

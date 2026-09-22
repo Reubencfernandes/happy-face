@@ -243,6 +243,72 @@ void main() {
     expect(db.pendingAssets(), ['a1']);
   });
 
+  test('photos not backed up stay visible however the timeline is sorted', () {
+    put(rec('x', DateTime.utc(2025)));
+    db.upsertDeviceAssets([
+      DeviceAsset(
+        assetId: 'a1',
+        takenAt: DateTime.utc(2025),
+        modifiedAt: DateTime.utc(2025),
+      ),
+      DeviceAsset(
+        assetId: 'onlyHere',
+        takenAt: DateTime.utc(2026),
+        modifiedAt: DateTime.utc(2026),
+      ),
+    ]);
+    db.markAssetUploaded('a1', 'x');
+
+    // Sorting by upload date used to drop everything that had never been
+    // uploaded — so the one question worth asking, "what isn't safe yet",
+    // came back empty.
+    for (final sort in TimelineSort.values) {
+      final ids = db
+          .timeline(sort: sort, filter: TimelineFilter.localOnly)
+          .map((i) => i.assetId);
+      expect(
+        ids,
+        contains('onlyHere'),
+        reason: 'missing when sorted by ${sort.name}',
+      );
+    }
+    expect(
+      db.timeline(sort: TimelineSort.uploaded).map((i) => i.assetId),
+      contains('onlyHere'),
+    );
+  });
+
+  test('a photo edited since its backup is not badged as backed up', () {
+    put(rec('x', DateTime.utc(2025)));
+    db.upsertDeviceAssets([
+      DeviceAsset(
+        assetId: 'a1',
+        takenAt: DateTime.utc(2025),
+        modifiedAt: DateTime.utc(2025),
+      ),
+    ]);
+    db.markAssetUploaded('a1', 'x');
+    expect(db.timeline().single.state, BackupState.backedUp);
+
+    // Edited on the phone: the bucket has an older version, so the grid must
+    // agree with the backup queue rather than claiming it is safe.
+    db.upsertDeviceAssets([
+      DeviceAsset(
+        assetId: 'a1',
+        takenAt: DateTime.utc(2025),
+        modifiedAt: DateTime.utc(2026, 2),
+      ),
+    ]);
+    expect(db.pendingAssets(), ['a1']);
+    expect(db.timeline().single.state, BackupState.localOnly);
+    expect(db.timeline(filter: TimelineFilter.backedUp), isEmpty);
+    expect(
+      db.timeline(filter: TimelineFilter.localOnly).single.assetId,
+      'a1',
+      reason: 'and it shows up when asking what still needs backing up',
+    );
+  });
+
   test('job queue with retry delays', () {
     put(rec('x', DateTime.utc(2025)));
     put(rec('y', DateTime.utc(2026)));

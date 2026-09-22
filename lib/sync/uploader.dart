@@ -18,6 +18,13 @@ class UploadSource {
 
   /// Gallery id, when the photo came from the phone's library.
   final String? assetId;
+
+  /// How big the file is, when that can be known without opening it.
+  ///
+  /// This is what stops the app being killed: reading a file pulls the whole
+  /// thing into memory, so anything too large has to be turned away *before*
+  /// [read] is called, not after.
+  final int? size;
   final Future<Uint8List> Function() read;
 
   /// A fast thumbnail from the OS, if available.
@@ -30,6 +37,7 @@ class UploadSource {
     required this.name,
     required this.read,
     this.assetId,
+    this.size,
     this.thumbnail,
     this.known = PhotoMetadata.empty,
   });
@@ -54,22 +62,164 @@ class UploadResult {
   const UploadResult(this.source, this.outcome, {this.photoId, this.error});
 }
 
+/// What is happening to one file at this moment.
+enum UploadPhase {
+  /// Reading it off the phone, or out of the file the user picked.
+  reading,
+
+  /// Encrypting, and compressing or making a thumbnail if it's a photo.
+  preparing,
+
+  /// Its bytes are going to the bucket.
+  uploading,
+
+  /// Uploaded; waiting for the catalogue entry that makes it official.
+  saving,
+}
+
+/// One file the backup is working on right now. There are as many of these
+/// as the uploader has workers, so the UI can show all of them at once.
+class ActiveUpload {
+  /// Where this file sits in the batch, so an update replaces the right row.
+  final int index;
+  final String name;
+  final String? assetId;
+  final UploadPhase phase;
+  final int bytesSent;
+  final int bytesTotal;
+
+  const ActiveUpload({
+    required this.index,
+    required this.name,
+    required this.phase,
+    this.assetId,
+    this.bytesSent = 0,
+    this.bytesTotal = 0,
+  });
+
+  /// How far this file has got, or null while there is nothing to measure.
+  double? get fraction => phase != UploadPhase.uploading || bytesTotal <= 0
+      ? null
+      : (bytesSent / bytesTotal).clamp(0.0, 1.0);
+
+  String get label => switch (phase) {
+    UploadPhase.reading => 'Reading',
+    UploadPhase.preparing => 'Encrypting',
+    UploadPhase.uploading => 'Uploading',
+    UploadPhase.saving => 'Saving',
+  };
+}
+
+/// What the run as a whole is doing. Getting photos ready is slow enough on
+/// a real phone to need saying out loud — it used to look like a freeze.
+enum BackupStage { preparing, uploading, stopping, finished }
+
 class UploadProgress {
   final int total;
+
+  /// Files with a result in hand.
   final int completed;
   final int uploaded;
   final int skipped;
   final int failed;
-  final String? current;
+
+  /// Files whose bytes are safely in the bucket but whose catalogue entry
+  /// hasn't been written yet. Catalogue entries go up in batches, so without
+  /// this the count would sit still for ten files at a time and then jump.
+  final int awaitingCatalogue;
+
+  /// The files in flight, in the order they were started.
+  final List<ActiveUpload> active;
+
+  /// Encrypted bytes that have reached the bucket, across the whole run.
+  final int bytesUploaded;
+
+  /// When the run began, for speed and time-left.
+  final DateTime? startedAt;
+
+  final BackupStage stage;
+
+  /// True when the run ended because the user stopped it, rather than
+  /// because it ran out of photos.
+  final bool stopped;
+
   const UploadProgress({
     required this.total,
     required this.completed,
     required this.uploaded,
     required this.skipped,
     required this.failed,
-    this.current,
+    this.awaitingCatalogue = 0,
+    this.active = const [],
+    this.bytesUploaded = 0,
+    this.startedAt,
+    this.stage = BackupStage.uploading,
+    this.stopped = false,
   });
+
   bool get done => completed == total;
+
+  /// Files that are as good as done, which is what a person means by "how
+  /// many have you got through". Never counts a file twice: a staged file
+  /// leaves [awaitingCatalogue] in the same step that it enters [completed].
+  int get settled => completed + awaitingCatalogue;
+
+  /// The files genuinely being worked on. A file that has finished uploading
+  /// and is only waiting for its catalogue entry is still in [active] so the
+  /// sheet can show it as "Saving", but counting it as one of the files going
+  /// up reads as nonsense — "16 files at once" from four workers.
+  List<ActiveUpload> get working => [
+    for (final a in active)
+      if (a.phase != UploadPhase.saving) a,
+  ];
+
+  /// The name to show when there's only room for one — and only when there
+  /// is one, because naming the oldest of four workers means naming the
+  /// slowest, which looks stuck.
+  String? get current => working.length == 1 ? working.first.name : null;
+
+  /// Bytes done, counting what is part-way out of the phone.
+  int get bytesDone =>
+      bytesUploaded + active.fold(0, (sum, a) => sum + a.bytesSent);
+
+  int get remaining => total - settled;
+
+  /// How far along, counting the files in flight by their own progress, so
+  /// one large video moves the bar instead of pausing it.
+  double? get fraction =>
+      total == 0 ? null : (progressed / total).clamp(0.0, 1.0);
+
+  /// Encrypted bytes a second, or null before there's enough to judge by.
+  double? get bytesPerSecond {
+    final started = startedAt;
+    if (started == null || bytesDone == 0) return null;
+    final seconds = DateTime.now().difference(started).inMilliseconds / 1000.0;
+    return seconds < 0.75 ? null : bytesDone / seconds;
+  }
+
+  /// Work got through so far, counting a file in flight by how far along it
+  /// is. This is what the bar draws and what the estimate is paced by.
+  double get progressed =>
+      settled + active.fold(0.0, (sum, a) => sum + (a.fraction ?? 0));
+
+  /// A guess at the time left, paced by work actually done.
+  ///
+  /// Deliberately not modelled in bytes: the sizes of files not yet started
+  /// are unknown — nothing in the device index records them — so a byte
+  /// estimate would be a guess stacked on a guess, and it collapses on a
+  /// re-run where most files are skipped in milliseconds. Pacing by
+  /// progressed work is self-correcting and costs nothing.
+  Duration? get timeLeft {
+    final started = startedAt;
+    if (started == null || done || stage == BackupStage.finished) return null;
+    final soFar = progressed;
+    if (soFar <= 0) return null;
+    final elapsed = DateTime.now().difference(started);
+    if (elapsed < const Duration(seconds: 3)) return null;
+    final left = (total - soFar).clamp(0.0, total.toDouble());
+    if (left <= 0) return null;
+    return elapsed * (left / soFar);
+  }
 }
 
 class Uploader {
@@ -87,6 +237,9 @@ class Uploader {
 
   bool _cancelled = false;
 
+  /// True once [cancel] has been called, until the next [reset].
+  bool get cancelled => _cancelled;
+
   Uploader({
     required this.bucket,
     required this.vault,
@@ -98,37 +251,92 @@ class Uploader {
     this.batchSize = 10,
   }) : clock = clock ?? DateTime.now;
 
+  /// Held while a large file is being read, encrypted and sent, so only one
+  /// of them is in memory at a time however many workers there are.
+  Future<void> _largeFile = Future.value();
+
+  /// Stops the run. Files already uploading finish; nothing new starts.
+  ///
+  /// This is deliberately *not* cleared by [run]: a backup is several calls
+  /// to [run], one per batch, and a stop pressed between two of them used to
+  /// be forgotten by the time the next batch began.
   void cancel() => _cancelled = true;
+
+  /// Clears a previous stop. Called once at the start of a whole backup,
+  /// never per batch.
+  void reset() => _cancelled = false;
 
   Future<List<UploadResult>> run(
     List<UploadSource> sources, {
     Compression compression = Compression.original,
     bool force = false,
     void Function(UploadProgress)? onProgress,
+    void Function(UploadResult)? onResult,
   }) async {
-    _cancelled = false;
     final results = List<UploadResult?>.filled(sources.length, null);
     final inFlight = <String, Future<bool>>{};
     final pending = <_Staged>[];
     final deferred = <Future<void>>[];
+    final active = <int, _Active>{};
+    final startedAt = DateTime.now();
     var flushing = Future<void>.value();
     var next = 0;
-    var uploaded = 0, skipped = 0, failed = 0, completed = 0;
+    var uploaded = 0, skipped = 0, failed = 0, completed = 0, bytes = 0;
+    // Indices whose bytes are in the bucket but whose catalogue entry is
+    // still outstanding. A set, not a counter: a file leaves it inside
+    // `finish`, so every path out — committed, failed, abandoned — is
+    // covered without remembering to decrement in each one.
+    final awaiting = <int>{};
     String? fatal;
+    DateTime? lastReport;
 
-    void report(String? current) => onProgress?.call(
-      UploadProgress(
-        total: sources.length,
-        completed: completed,
-        uploaded: uploaded,
-        skipped: skipped,
-        failed: failed,
-        current: current,
-      ),
-    );
+    // Bytes arrive in 64 KiB chunks from four workers at once, so the raw
+    // rate is far faster than anything a screen needs. Anything that changes
+    // what the list says — a new file, a phase, a finished one — is forced
+    // through; the byte ticks in between are thinned out.
+    void report({bool force = false}) {
+      if (onProgress == null) return;
+      final now = DateTime.now();
+      if (!force &&
+          lastReport != null &&
+          now.difference(lastReport!) < const Duration(milliseconds: 80)) {
+        return;
+      }
+      lastReport = now;
+      onProgress(
+        UploadProgress(
+          total: sources.length,
+          completed: completed,
+          uploaded: uploaded,
+          skipped: skipped,
+          failed: failed,
+          awaitingCatalogue: awaiting.length,
+          stage: _cancelled ? BackupStage.stopping : BackupStage.uploading,
+          active: [
+            for (final a in active.values.toList()..sort(_Active.byIndex))
+              a.snapshot(),
+          ],
+          bytesUploaded: bytes,
+          startedAt: startedAt,
+        ),
+      );
+    }
+
+    /// Lets go of a file that was never finished, without recording a
+    /// result for it. Its `_Active` row would otherwise linger in the list
+    /// for ever, still counted in the bytes and the bar.
+    void abandon(int index) {
+      awaiting.remove(index);
+      bytes += active.remove(index)?.committed ?? 0;
+      report(force: true);
+    }
 
     void finish(int index, UploadResult result) {
+      awaiting.remove(index);
       results[index] = result;
+      // A file's bytes move from its own row into the run's total as it
+      // leaves, so [UploadProgress.bytesDone] never counts them twice.
+      bytes += active.remove(index)?.committed ?? 0;
       completed++;
       switch (result.outcome) {
         case UploadOutcome.uploaded:
@@ -138,7 +346,8 @@ class Uploader {
         case UploadOutcome.failed:
           failed++;
       }
-      report(null);
+      report(force: true);
+      onResult?.call(result);
     }
 
     Future<void> flush() {
@@ -181,31 +390,52 @@ class Uploader {
     Future<void> worker() async {
       while (true) {
         if (next >= sources.length) return;
+        // A stop, or keys that have stopped working, leave the rest of the
+        // batch alone rather than marking every one of them failed:
+        // stopping a backup of two thousand photos used to report one
+        // thousand nine hundred failures.
+        if (_cancelled || fatal != null) return;
         final index = next++;
         final source = sources[index];
-        if (_cancelled || fatal != null) {
-          finish(
-            index,
-            UploadResult(
-              source,
-              UploadOutcome.failed,
-              error: fatal ?? 'Cancelled',
-            ),
-          );
-          continue;
-        }
-        report(source.name);
+        final live = active[index] = _Active(
+          index,
+          source.name,
+          source.assetId,
+          onChange: report,
+        );
+        report(force: true);
         try {
-          final staged = await _prepare(
-            source,
-            index,
-            compression,
-            force,
-            inFlight,
-          );
+          // Big ones queue up behind each other. Four videos read at once is
+          // four times the memory, and the phone kills the app for less.
+          final big = (source.size ?? 0) >= largeFileBytes;
+          final turn = big ? _largeFile : Future<void>.value();
+          final mine = Completer<void>();
+          if (big) _largeFile = mine.future;
+          await turn;
+          final staged = await (() async {
+            try {
+              return await _prepare(
+                source,
+                index,
+                compression,
+                force,
+                inFlight,
+                live,
+              );
+            } finally {
+              if (big) mine.complete();
+            }
+          })();
           if (staged is UploadResult) {
             finish(index, staged);
           } else if (staged is _Duplicate) {
+            // Its bytes are already in the bucket under the same id, so it
+            // is as good as done; it is just waiting for the first copy's
+            // catalogue entry. Leaving it in `active` made the sheet list a
+            // file that was doing nothing.
+            active.remove(index);
+            awaiting.add(index);
+            report(force: true);
             // Resolve once the first copy is catalogued, without blocking
             // this worker (that copy may be waiting for this batch to fill).
             deferred.add(
@@ -231,11 +461,32 @@ class Uploader {
               }),
             );
           } else if (staged is _Staged) {
+            // Its bytes are in the bucket; only the catalogue entry is
+            // outstanding, so it counts as got-through from here. Saying so
+            // now also stops it showing a full upload bar and being counted
+            // in `awaiting` at the same time.
             pending.add(staged);
+            awaiting.add(index);
+            live.phaseIs(UploadPhase.saving);
+            report(force: true);
             if (pending.length >= batchSize) await flush();
           }
+        } on _Cancelled {
+          // Not a failure, and not a result: this file was simply never done.
+          abandon(index);
+          return;
         } on S3Exception catch (e) {
-          if (e.isAuth) fatal = e.friendly;
+          if (e.isAuth) {
+            // The keys have stopped working. Every other file would fail the
+            // same way, so stop rather than grinding through thousands.
+            fatal = e.friendly;
+            abandon(index);
+            finish(
+              index,
+              UploadResult(source, UploadOutcome.failed, error: e.friendly),
+            );
+            return;
+          }
           finish(
             index,
             UploadResult(source, UploadOutcome.failed, error: e.friendly),
@@ -252,16 +503,24 @@ class Uploader {
       }
     }
 
-    report(null);
+    report(force: true);
     await Future.wait([
       for (var i = 0; i < min(concurrency, max(1, sources.length)); i++)
         worker(),
     ]);
+    // These still run after a stop. `deferred` waits on completers that only
+    // `flush` resolves, so skipping them would hang on a duplicate for ever.
     await flush();
     await flushing;
+    // Belt and braces: anything still holding an uncompleted completer is
+    // released, so a waiting duplicate can never wedge the run.
+    for (final s in pending) {
+      if (!s.done.isCompleted) s.done.complete(false);
+    }
     await Future.wait(deferred);
     await catalogue.compactIfNeeded();
-    return results.cast<UploadResult>();
+    // A stop leaves holes where files were never attempted.
+    return results.whereType<UploadResult>().toList();
   }
 
   /// Returns an [UploadResult] when there's nothing to upload, or a [_Staged]
@@ -272,6 +531,7 @@ class Uploader {
     Compression compression,
     bool force,
     Map<String, Future<bool>> inFlight,
+    _Active live,
   ) async {
     final assetId = source.assetId;
     if (assetId != null && !force) {
@@ -285,13 +545,20 @@ class Uploader {
       }
     }
 
+    // Before the file is even read: nothing is registered yet, so this one
+    // can simply be dropped.
+    if (_cancelled) throw const _Cancelled();
+    // Asked of the file system, not of the file: reading a 2 GB video to
+    // find out it is 2 GB is what killed the app.
+    if (source.size case final known? when known > maxUploadBytes) {
+      throw FormatException(_tooBig(known));
+    }
+    live.phaseIs(UploadPhase.reading);
     final bytes = await source.read();
+    live.phaseIs(UploadPhase.preparing);
+    // A file whose size wasn't known up front is still checked, late.
     if (bytes.length > maxUploadBytes) {
-      throw FormatException(
-        'This file is ${(bytes.length / 1024 / 1024).round()} MB. Happy Drive '
-        'uploads each file in one go, so ${maxUploadBytes ~/ (1024 * 1024)} MB '
-        'is the most it can handle.',
-      );
+      throw FormatException(_tooBig(bytes.length));
     }
     // Photos, videos and anything else: unknown bytes are stored as they are
     // rather than turned away.
@@ -339,16 +606,26 @@ class Uploader {
           (isImage ? await codec.thumbnail(bytes) : null);
 
       final originalKey = BucketLayout.original(id);
-      await bucket.putObject(
-        originalKey,
-        await vault.seal(stored, context: originalKey),
-      );
-      if (thumb != null) {
-        final thumbKey = BucketLayout.thumbnail(id);
+      final sealed = await vault.seal(stored, context: originalKey);
+      final sealedThumb = thumb == null
+          ? null
+          : await vault.seal(thumb, context: BucketLayout.thumbnail(id));
+      // The last chance to bow out: past this the bytes are going up, and a
+      // file that has started uploading is allowed to finish. Thrown, not
+      // returned, so the `catch` below still completes this file's completer.
+      if (_cancelled) throw const _Cancelled();
+      // The bar covers both objects, so it doesn't jump back to zero when a
+      // photo's thumbnail follows its original.
+      live.uploadingBytes(sealed.length + (sealedThumb?.length ?? 0));
+      await bucket.putObject(originalKey, sealed, onSent: live.sent);
+      live.uploaded(sealed.length);
+      if (sealedThumb != null) {
         await bucket.putObject(
-          thumbKey,
-          await vault.seal(thumb, context: thumbKey),
+          BucketLayout.thumbnail(id),
+          sealedThumb,
+          onSent: live.sent,
         );
+        live.uploaded(sealedThumb.length);
       }
 
       staged.record = PhotoRecord(
@@ -378,8 +655,26 @@ class Uploader {
     db.enqueueJob(r.id, JobKind.weather);
   }
 
-  /// The most one file can be, because each upload is a single request.
-  static const maxUploadBytes = 256 * 1024 * 1024;
+  /// The most one file can be.
+  ///
+  /// Not a protocol limit — a memory one. Each upload is a single request, so
+  /// the whole file is held in memory at once, twice over while it is being
+  /// encrypted, and it crosses the platform channel as one allocation on the
+  /// Android heap first. A mid-range phone caps that heap around 384 MB, so a
+  /// 215 MB video kills the app outright. Until uploads are chunked, this is
+  /// the size that survives four workers running at once.
+  static const maxUploadBytes = 64 * 1024 * 1024;
+
+  /// Files at or above this go up one at a time, whatever [concurrency] says,
+  /// so four large videos can't be in memory together.
+  static const largeFileBytes = 12 * 1024 * 1024;
+
+  static String _tooBig(int bytes) =>
+      // Rounded up, not to nearest: a 64.4 MB file rounded down read as
+      // "this file is 64 MB, so 64 MB is the most", which looks like a bug.
+      'This file is ${(bytes / 1024 / 1024).ceil()} MB. Happy Drive uploads '
+      'each file in one go, so ${maxUploadBytes ~/ (1024 * 1024)} MB is the '
+      'most it can handle on a phone.';
 
   static String _cleanName(String name, String mime) {
     var n = name.trim().isEmpty
@@ -400,6 +695,79 @@ class Uploader {
     TimeoutException() => 'The connection timed out.',
     _ => 'Upload failed: $e',
   };
+}
+
+/// The mutable half of [ActiveUpload]: what one worker is doing, kept up to
+/// date in place and snapshotted whenever the UI is told.
+class _Active {
+  final int index;
+  final String name;
+  final String? assetId;
+  final void Function({bool force}) onChange;
+
+  UploadPhase phase = UploadPhase.reading;
+
+  /// Bytes of this file already out, and how many there are in total. Both
+  /// count the encrypted form, which is what actually travels.
+  int _sent = 0;
+  int _total = 0;
+
+  /// Bytes of earlier objects for this same file (an original, when its
+  /// thumbnail is going up), so the file's own bar only moves forwards.
+  int _base = 0;
+
+  _Active(this.index, this.name, this.assetId, {required this.onChange});
+
+  /// This file's bytes that are safely in the bucket.
+  int get committed => _base;
+
+  static int byIndex(_Active a, _Active b) => a.index.compareTo(b.index);
+
+  void phaseIs(UploadPhase next) {
+    if (phase == next) return;
+    phase = next;
+    onChange(force: true);
+  }
+
+  void uploadingBytes(int total) {
+    _total = total;
+    _sent = 0;
+    _base = 0;
+    phase = UploadPhase.uploading;
+    onChange(force: true);
+  }
+
+  /// A retry replays the body, so [sent] can go backwards within one object;
+  /// the file's own total never does.
+  void sent(int sent, int total) {
+    _sent = _base + sent;
+    onChange();
+  }
+
+  void uploaded(int bytes) {
+    _base += bytes;
+    _sent = _base;
+    onChange(force: true);
+  }
+
+  ActiveUpload snapshot() => ActiveUpload(
+    index: index,
+    name: name,
+    assetId: assetId,
+    phase: phase,
+    bytesSent: _sent,
+    bytesTotal: _total,
+  );
+}
+
+/// Thrown to unwind a file that was abandoned because the user stopped.
+///
+/// An exception rather than a `return`: once a [_Staged] is registered in the
+/// in-flight map, another worker may be waiting on its completer, and the
+/// existing `catch` is what completes it. Returning from inside that block
+/// would hang the run on a duplicate that never resolves.
+class _Cancelled implements Exception {
+  const _Cancelled();
 }
 
 class _Duplicate {

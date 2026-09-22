@@ -24,62 +24,69 @@ class AuthPage extends StatelessWidget {
     final theme = Theme.of(context);
     return Scaffold(
       backgroundColor: ink,
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
-              children: [
-                if (onBack != null)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: InkWell(
-                      onTap: onBack,
-                      borderRadius: BorderRadius.circular(8),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 6,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.arrow_back_ios_new_rounded,
-                              size: 15,
-                              color: inkText,
-                            ),
-                            const SizedBox(width: 7),
-                            Text('Back', style: theme.textTheme.titleSmall),
-                          ],
+      // Tapping the page puts the keyboard away. Without this the only way
+      // out is the system Back button, and a field that takes focus again
+      // after a failed validation brings it straight back up.
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+                children: [
+                  if (onBack != null)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: InkWell(
+                        onTap: onBack,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 6,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.arrow_back_ios_new_rounded,
+                                size: 15,
+                                color: inkText,
+                              ),
+                              const SizedBox(width: 7),
+                              Text('Back', style: theme.textTheme.titleSmall),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                const SizedBox(height: 26),
-                Text(
-                  title,
-                  style: theme.textTheme.displaySmall?.copyWith(
-                    color: inkText,
-                    fontWeight: FontWeight.w600,
-                    height: 1.08,
-                    letterSpacing: -1,
-                  ),
-                ),
-                if (subtitle != null) ...[
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 26),
                   Text(
-                    subtitle!,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: inkMuted,
-                      height: 1.45,
+                    title,
+                    style: theme.textTheme.displaySmall?.copyWith(
+                      color: inkText,
+                      fontWeight: FontWeight.w600,
+                      height: 1.08,
+                      letterSpacing: -1,
                     ),
                   ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      subtitle!,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: inkMuted,
+                        height: 1.45,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 28),
+                  ...children,
                 ],
-                const SizedBox(height: 28),
-                ...children,
-              ],
+              ),
             ),
           ),
         ),

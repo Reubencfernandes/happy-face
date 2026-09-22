@@ -76,9 +76,18 @@ class PhotoStore {
   }
 
   /// Downloads and decrypts the full original.
-  Future<Uint8List> original(String photoId) async {
+  ///
+  /// [onProgress] follows the download itself, which for a video is most of
+  /// the wait — the decryption after it is quick.
+  Future<Uint8List> original(
+    String photoId, {
+    void Function(int received, int? total)? onProgress,
+  }) async {
     final key = BucketLayout.original(photoId);
-    return vault.open(await bucket.getObject(key), context: key);
+    return vault.open(
+      await bucket.getObject(key, onReceived: onProgress),
+      context: key,
+    );
   }
 
   /// Removes a photo's cached data from this device.

@@ -91,4 +91,21 @@ String fileSize(int bytes) {
   return '${(bytes / 1024 / 1024 / 1024).toStringAsFixed(2)} GB';
 }
 
+/// "3.4 MB/s", for a backup that is moving.
+String transferRate(double bytesPerSecond) =>
+    '${fileSize(bytesPerSecond.round())}/s';
+
+/// Roughly how long is left, rounded to something worth saying out loud.
+String timeLeft(Duration d) {
+  if (d.inSeconds < 15) return 'a few seconds left';
+  if (d.inSeconds < 90) return 'about ${(d.inSeconds / 15).round() * 15}s left';
+  if (d.inMinutes < 60) return 'about ${d.inMinutes} min left';
+  final hours = d.inMinutes / 60;
+  return 'about ${hours.toStringAsFixed(hours < 10 ? 1 : 0)} h left';
+}
+
+/// "2.1 of 8.4 MB", the shape a per-file bar wants underneath it.
+String bytesOf(int done, int total) =>
+    total <= 0 ? fileSize(done) : '${fileSize(done)} of ${fileSize(total)}';
+
 DateTime _dateOnly(DateTime d) => DateTime.utc(d.year, d.month, d.day);

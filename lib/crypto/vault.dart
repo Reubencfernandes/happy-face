@@ -172,11 +172,13 @@ class Vault {
   Future<List<int>> exportMasterKey() => _master.extractBytes();
 
   Future<Uint8List> seal(List<int> plaintext, {required String context}) async {
-    final box = await _aes.encrypt(
-      plaintext,
-      secretKey: _contentKey,
-      aad: utf8.encode(context),
-    );
+    final box = plaintext.length >= _encryptElsewhereAbove
+        ? await _encryptElsewhere(plaintext, context)
+        : await _aes.encrypt(
+            plaintext,
+            secretKey: _contentKey,
+            aad: utf8.encode(context),
+          );
     final out = BytesBuilder(copy: false)
       ..addByte(_version)
       ..add(box.nonce)
@@ -184,6 +186,39 @@ class Vault {
       ..add(box.mac.bytes);
     return out.takeBytes();
   }
+
+  /// Encrypts a big file on a worker isolate.
+  ///
+  /// cryptography_flutter hands work to the platform only up to a cap — 20 MB
+  /// on Android, 100 MB on iOS — and above it the whole chain falls through
+  /// to pure-Dart AES-GCM run *inline on the calling isolate*. So a single
+  /// large video would encrypt on the isolate that draws the gallery, which
+  /// is what made a backup look frozen. Off here it is pure Dart too, but it
+  /// is not in the way.
+  Future<SecretBox> _encryptElsewhere(
+    List<int> plaintext,
+    String context,
+  ) async {
+    final key = await _contentKey.extractBytes();
+    final transfer = TransferableTypedData.fromList([
+      plaintext is Uint8List ? plaintext : Uint8List.fromList(plaintext),
+    ]);
+    final aad = utf8.encode(context);
+    final parts = await Isolate.run(() async {
+      final box = await DartAesGcm.with256bits().encrypt(
+        transfer.materialize().asUint8List(),
+        secretKey: SecretKey(key),
+        aad: aad,
+      );
+      return (box.nonce, box.cipherText, box.mac.bytes);
+    });
+    return SecretBox(parts.$2, nonce: parts.$1, mac: Mac(parts.$3));
+  }
+
+  /// Payloads at or above this are encrypted on a worker isolate. Chosen to
+  /// sit under the platform cap, so everything below still takes the fast
+  /// native path on the calling isolate.
+  static const _encryptElsewhereAbove = 16 * 1024 * 1024;
 
   Future<Uint8List> open(List<int> blob, {required String context}) async {
     if (blob.length < 1 + _nonceLength + _macLength || blob[0] != _version) {
@@ -212,11 +247,34 @@ class Vault {
 
   /// Stable, secret-keyed photo id: the same bytes always get the same id,
   /// but nobody without the master key can compute or compare ids.
-  String photoIdFor(List<int> plaintext) {
-    final digest = hash.sha256.convert(plaintext).bytes;
+  String photoIdFor(List<int> plaintext) =>
+      _idFromDigest(hash.sha256.convert(plaintext).bytes);
+
+  /// The same id, with the expensive half computed somewhere else.
+  ///
+  /// SHA-256 over a whole file is pure Dart, so on a large video it holds
+  /// its isolate for a noticeable stretch — long enough to freeze the
+  /// gallery if that isolate is the one drawing it. Only the 32-byte digest
+  /// comes back; the keyed step stays here, so the dedupe key never leaves
+  /// this isolate.
+  Future<String> photoIdForAsync(Uint8List plaintext) async {
+    if (plaintext.length < _hashElsewhereAbove) return photoIdFor(plaintext);
+    // Copied into native memory rather than onto the other isolate's heap,
+    // and handed over without a second copy.
+    final transfer = TransferableTypedData.fromList([plaintext]);
+    final digest = await Isolate.run(
+      () => hash.sha256.convert(transfer.materialize().asUint8List()).bytes,
+    );
+    return _idFromDigest(digest);
+  }
+
+  String _idFromDigest(List<int> digest) {
     final mac = hash.Hmac(hash.sha256, _dedupeKey).convert(digest).bytes;
     return mac.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
+
+  /// Below this, starting an isolate costs more than the hash it saves.
+  static const _hashElsewhereAbove = 512 * 1024;
 
   static Future<SecretKey> _deriveKek(
     String passphrase,

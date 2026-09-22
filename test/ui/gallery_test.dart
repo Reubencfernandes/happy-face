@@ -97,7 +97,7 @@ void main() {
     expect(find.byIcon(Icons.calendar_today_outlined), findsOneWidget);
 
     // "Select photos" starts selection without anyone long-pressing.
-    await tester.tap(find.byIcon(Icons.apps_rounded));
+    await tester.tap(find.byIcon(Icons.filter_list_rounded));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Select photos'));
     await tester.pump();

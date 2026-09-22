@@ -11,6 +11,7 @@ import '../media/compress.dart';
 import '../enrich/enricher.dart';
 import '../sync/background.dart';
 import '../sync/uploader.dart';
+import 'backup_status.dart';
 import 'calendar_view.dart';
 import 'compression_sheet.dart';
 import 'places_view.dart';
@@ -99,13 +100,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         .where((r) => r.outcome == UploadOutcome.failed)
         .toList();
     if (quiet && failed.isEmpty && uploaded == 0) return;
+    final stopped = _session.upload?.stopped ?? false;
     final parts = [
+      if (stopped) 'Stopped',
       if (uploaded > 0) '$uploaded backed up',
       if (skipped > 0) '$skipped already safe',
       if (failed.isNotEmpty) '${failed.length} failed',
     ];
     _toast(
-      parts.join(' · '),
+      parts.isEmpty ? 'Nothing to back up' : parts.join(' · '),
       action: failed.isEmpty
           ? null
           : SnackBarAction(
@@ -215,6 +218,36 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// The bucket has been deleted on huggingface.co. There is nothing to sync
+  /// with any more, so the only way forward is to point the app somewhere
+  /// else — which means signing in again.
+  Future<void> _reconnect() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Connect to another bucket?'),
+        content: Text(
+          'The bucket "${_session.account.bucket}" is gone from your Hugging '
+          'Face account, so there is nothing here to back up to. Signing in '
+          'again lets you pick or make another one.\n\n'
+          'Photos on this phone are untouched. Anything that was only in '
+          'that bucket is gone with it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Sign in again'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) widget.onSignOut();
+  }
+
   Future<void> _askAccess() async {
     final state = await _session.scanGallery(ask: true);
     if (!mounted) return;
@@ -235,11 +268,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (files.isEmpty || !mounted) return;
     final compression = await _pickCompression(count: files.length);
     if (compression == null) return;
-    await _runBackup(
-      () => _session.backUp([
-        for (final f in files) UploadSource(name: f.name, read: f.readAsBytes),
-      ], compression: compression),
-    );
+    // Sizes come from the picker when it knows them, so an enormous file is
+    // turned away with a reason rather than read into memory first.
+    final sources = [
+      for (final f in files)
+        UploadSource(name: f.name, size: await f.length(), read: f.readAsBytes),
+    ];
+    await _runBackup(() => _session.backUp(sources, compression: compression));
   }
 
   Future<void> _backUpSelection() async {
@@ -326,8 +361,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    // Coarse, not the session itself: a running backup ticks a dozen times a
+    // second, and the bar and the backup button are the only things that
+    // care. Rebuilding four tabs' worth of widgets at that rate is what made
+    // the app feel stuck and swallow taps.
     return ListenableBuilder(
-      listenable: Listenable.merge([_session, _selection]),
+      listenable: Listenable.merge([_session.coarse, _selection]),
       builder: (context, _) {
         final selecting = _selection.active;
         // The gallery is always dark, whatever the phone is set to: photos
@@ -364,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                   ? 'Choose photos'
                                   : '${_selection.length} selected'
                             : _title,
-                        upload: _session.upload,
+                        session: _session,
                         actions: selecting
                             ? _selectionActions()
                             : _normalActions(),
@@ -395,6 +434,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 ],
                               ),
                       ),
+                      if (_session.bucketMissing)
+                        _MissingBucket(
+                          session: _session,
+                          onReconnect: _reconnect,
+                        ),
                       Expanded(
                         child: IndexedStack(
                           index: _tab,
@@ -440,14 +484,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   List<Widget> _normalActions() => [
     if (_tab == 0) _filterMenu(),
-    // The backup button: one arrow, pointing up at the cloud.
-    _CircleButton(
-      icon: _session.uploading
-          ? Icons.stop_rounded
-          : Icons.arrow_upward_rounded,
-      tooltip: _session.uploading ? 'Stop backing up' : 'Back up',
-      filled: !_session.uploading,
-      onPressed: _session.uploading ? _session.cancelUpload : _openBackupSheet,
+    // The backup button: one arrow, pointing up at the cloud. It watches the
+    // session directly, since it is one of the few things that should follow
+    // a backup tick by tick.
+    ListenableBuilder(
+      listenable: _session,
+      builder: (context, _) {
+        final uploading = _session.uploading;
+        final stopping = _session.stopping;
+        return _UploadButton(
+          icon: uploading ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+          label: stopping
+              ? 'Stopping'
+              : uploading
+              ? 'Stop'
+              : 'Upload',
+          filled: !uploading,
+          busy: stopping,
+          // Once tapped, it says so rather than inviting a second tap.
+          onPressed: stopping
+              ? null
+              : uploading
+              ? _session.cancelUpload
+              : _openBackupSheet,
+        );
+      },
     ),
     _CircleButton(
       icon: Icons.settings_outlined,
@@ -520,7 +581,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           child: Text(label),
         ),
     ],
-    child: const _CircleButton(icon: Icons.apps_rounded, tooltip: null),
+    // Lines of decreasing width: the one mark that reads as "sort and
+    // filter" on sight. An app grid says "switch apps" and sliders say
+    // "settings", which is what this button is sitting next to.
+    child: const _CircleButton(icon: Icons.filter_list_rounded, tooltip: null),
   );
 
   List<Widget> _selectionActions() {
@@ -557,24 +621,87 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 }
 
+/// Shown when the bucket has been deleted on huggingface.co while the app
+/// wasn't looking. Without it the gallery carries on showing every photo
+/// from its local mirror, and the only clue is a vague "not found".
+class _MissingBucket extends StatelessWidget {
+  final Session session;
+  final VoidCallback onReconnect;
+  const _MissingBucket({required this.session, required this.onReconnect});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final error = theme.colorScheme.error;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+      child: Material(
+        color: error.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onReconnect,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.cloud_off_outlined, color: error, size: 20),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Your bucket is gone',
+                        style: theme.textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '"${session.account.bucket}" is no longer in your '
+                        'Hugging Face account. Photos on this phone are safe.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: inkMuted,
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Connect to another bucket',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: accent,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The page title, big and left-aligned, with round buttons beside it.
 class _Header extends StatelessWidget {
   final String title;
   final List<Widget> actions;
   final Widget? subtitle;
-  final UploadProgress? upload;
+  final Session session;
 
   const _Header({
     required this.title,
     required this.actions,
     required this.subtitle,
-    required this.upload,
+    required this.session,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final upload = this.upload;
     return SafeArea(
       bottom: false,
       child: Padding(
@@ -606,22 +733,85 @@ class _Header extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 6, right: 6),
                 child: subtitle,
               ),
-            if (upload != null && !upload.done)
-              Padding(
-                padding: const EdgeInsets.only(top: 8, right: 6),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: upload.total == 0
-                        ? null
-                        : upload.completed / upload.total,
-                    minHeight: 4,
-                  ),
-                ),
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: ListenableBuilder(
+                listenable: session,
+                builder: (context, _) => BackupStatusBar(session: session),
               ),
+            ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The backup action: an arrow and the word for it, so the one button that
+/// does something irreversible isn't a bare glyph to be guessed at.
+class _UploadButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool filled;
+  final bool busy;
+
+  const _UploadButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.filled = false,
+    this.busy = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // White on both states, as asked. The amber is deepened a shade when
+    // filled so the white actually reads against it.
+    const ink = Colors.white;
+    final pill = Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: filled
+            ? glowEmber
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(21),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (busy)
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: ink),
+            )
+          else
+            Icon(icon, size: 19, color: ink),
+          const SizedBox(width: 7),
+          Text(
+            label,
+            style: const TextStyle(
+              color: ink,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+    return Semantics(
+      button: true,
+      label: label,
+      child: onPressed == null
+          ? Opacity(opacity: 0.6, child: pill)
+          : InkWell(
+              onTap: onPressed,
+              borderRadius: BorderRadius.circular(21),
+              child: pill,
+            ),
     );
   }
 }
@@ -806,12 +996,11 @@ class _StatusChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final upload = session.upload;
+    // While a backup runs the bar below says all this and more, so the chip
+    // steps back to the last thing that finished.
+    if (upload != null && !upload.done) return const SizedBox.shrink();
     final stats = session.db.backupStats();
     final (IconData icon, String text) = switch (()) {
-      _ when upload != null && !upload.done => (
-        Icons.cloud_sync_outlined,
-        'Backing up ${upload.completed + 1} of ${upload.total}',
-      ),
       _ when session.syncing => (Icons.sync, 'Syncing…'),
       _ when session.syncError != null => (
         Icons.cloud_off_outlined,

@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -11,6 +13,7 @@ import '../media/image_type.dart';
 import '../s3/s3_client.dart';
 import 'compression_sheet.dart';
 import 'format.dart';
+import 'video_view.dart';
 
 class PhotoViewer extends StatefulWidget {
   final Session session;
@@ -68,12 +71,18 @@ class _PhotoViewerState extends State<PhotoViewer> {
     }
   }
 
-  Future<void> _saveToPhone() => _run('Saved to this phone', () async {
-    final record = _record!;
-    final bytes = await _session.photos.original(record.id);
-    await _session.gallery.saveToPhone(bytes, record.name, mime: record.mime);
-    await _session.scanGallery();
-  });
+  Future<void> _saveToPhone([TimelineItem? which]) => _run(
+    'Saved to this phone',
+    () async {
+      final item = which ?? _item;
+      final id = item.photoId;
+      final record = id == null ? null : _session.db.photo(id);
+      if (record == null) return;
+      final bytes = await _session.photos.original(record.id);
+      await _session.gallery.saveToPhone(bytes, record.name, mime: record.mime);
+      await _session.scanGallery();
+    },
+  );
 
   Future<void> _backUp() async {
     // One photo, one choice: this is where a keeper gets stored untouched
@@ -193,6 +202,12 @@ class _PhotoViewerState extends State<PhotoViewer> {
                   key: ValueKey(_items[i].key),
                   session: _session,
                   item: _items[i],
+                  chromeVisible: _chrome,
+                  active: i == _index,
+                  // Only worth offering when the phone hasn't got it.
+                  onSave: _busy || _items[i].state != BackupState.cloudOnly
+                      ? null
+                      : () => _saveToPhone(_items[i]),
                 ),
               ),
             ),
@@ -248,25 +263,32 @@ class _Action extends StatelessWidget {
   final VoidCallback? onTap;
   const _Action({required this.icon, required this.label, required this.onTap});
 
+  // An equal share of the bar each, rather than natural widths that spill
+  // off the side of a narrow phone once there are three or four of them.
   @override
-  Widget build(BuildContext context) => InkWell(
-    borderRadius: BorderRadius.circular(12),
-    onTap: onTap,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: onTap == null ? Colors.white54 : Colors.white),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 12,
-              color: onTap == null ? Colors.white54 : Colors.white,
+  Widget build(BuildContext context) => Expanded(
+    child: InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: onTap == null ? Colors.white54 : Colors.white),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                color: onTap == null ? Colors.white54 : Colors.white,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -275,7 +297,19 @@ class _Action extends StatelessWidget {
 class _FullImage extends StatefulWidget {
   final Session session;
   final TimelineItem item;
-  const _FullImage({super.key, required this.session, required this.item});
+  final bool chromeVisible;
+
+  /// Whether this is the page on screen, rather than one either side of it.
+  final bool active;
+  final VoidCallback? onSave;
+  const _FullImage({
+    super.key,
+    required this.session,
+    required this.item,
+    required this.chromeVisible,
+    required this.active,
+    this.onSave,
+  });
 
   @override
   State<_FullImage> createState() => _FullImageState();
@@ -284,7 +318,16 @@ class _FullImage extends StatefulWidget {
 class _FullImageState extends State<_FullImage> {
   Uint8List? _preview;
   Uint8List? _full;
+
+  /// A small text file, read so it can be shown rather than described.
+  String? _text;
   String? _error;
+
+  /// Whether what's on screen came off the phone rather than the bucket.
+  bool? _fromPhone;
+
+  /// Past this, a text file is a download rather than a preview.
+  static const _maxTextPreview = 256 * 1024;
 
   @override
   void initState() {
@@ -292,29 +335,35 @@ class _FullImageState extends State<_FullImage> {
     _load();
   }
 
-  Future<void> _load() async {
+  void _load() {
+    // The two run together. Awaiting the thumbnail first made the full-size
+    // photo wait on a round trip it had no need of — including when the
+    // original was sitting on the phone all along.
+    unawaited(_loadPreview());
+    final item = widget.item;
+    // A video is not decoded here — it is played, which fetches its own
+    // copy on demand. A short text file is small enough to just show.
+    if (item.kind != MediaKind.image) {
+      if (_isText) unawaited(_loadText());
+      return;
+    }
+    unawaited(_loadFull());
+  }
+
+  Future<void> _loadPreview() async {
     final item = widget.item;
     final session = widget.session;
-    // Show the thumbnail straight away, then swap in the original.
     try {
       final thumb = item.assetId != null
           ? await session.gallery.thumbnail(item.assetId!, size: 800)
           : await session.photos.thumbnail(item.photoId!);
       if (mounted && _full == null) setState(() => _preview = thumb);
     } catch (_) {}
+  }
 
-    // A video or a document is never decoded here: the original could be
-    // hundreds of megabytes, and it wouldn't be an image at the end of it.
-    if (item.kind != MediaKind.image) return;
-
+  Future<void> _loadFull() async {
     try {
-      Uint8List? bytes;
-      if (item.assetId != null) {
-        bytes = await session.gallery.original(item.assetId!);
-      }
-      if (bytes == null && item.photoId != null) {
-        bytes = await session.photos.original(item.photoId!);
-      }
+      final bytes = await _originalBytes();
       if (bytes == null) throw Exception('Photo not available');
       final displayable = await _displayable(bytes);
       if (mounted) setState(() => _full = displayable);
@@ -325,6 +374,70 @@ class _FullImageState extends State<_FullImage> {
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not open this photo.');
     }
+  }
+
+  PhotoRecord? get _record => widget.item.photoId == null
+      ? null
+      : widget.session.db.photo(widget.item.photoId!);
+
+  /// Sound has no picture, but it has a play button, which beats a card
+  /// telling you to save it somewhere else.
+  bool get _isPlayable =>
+      widget.item.kind == MediaKind.video ||
+      (widget.item.mime?.startsWith('audio/') ?? false);
+
+  bool get _isText {
+    final mime = widget.item.mime ?? '';
+    final record = _record;
+    return mime.startsWith('text/') &&
+        record != null &&
+        record.size <= _maxTextPreview;
+  }
+
+  Future<void> _loadText() async {
+    try {
+      final bytes = await _originalBytes();
+      if (bytes == null) return;
+      final decoded = utf8.decode(bytes, allowMalformed: true);
+      if (mounted) setState(() => _text = decoded);
+    } catch (_) {
+      // No preview, then: the card below still says what the file is.
+    }
+  }
+
+  /// The file itself, from the phone when it is there.
+  ///
+  /// The phone's copy is the better one — it is the untouched original,
+  /// while the backup may have been compressed — and it costs nothing to
+  /// read. Downloading is the fallback, not the first move.
+  Future<Uint8List?> _originalBytes() async {
+    final item = widget.item;
+    if (item.assetId != null) {
+      final onPhone = await widget.session.gallery.original(item.assetId!);
+      if (onPhone != null) {
+        _fromPhone = true;
+        return onPhone;
+      }
+    }
+    final id = item.photoId;
+    if (id == null) return null;
+    _fromPhone = false;
+    return widget.session.photos.original(id);
+  }
+
+  /// Which copy is on screen, said plainly.
+  ///
+  /// It matters: a backup made at High or Balanced quality is a re-encode,
+  /// so the copy on the phone really is the better one. Until now the app
+  /// never said which of the two you were looking at.
+  String? get _sourceLabel {
+    final fromPhone = _fromPhone;
+    if (fromPhone == null) return null;
+    if (fromPhone) return 'Original, from this phone';
+    final compression = _record?.compression ?? 'original';
+    if (compression == 'original') return 'From your storage';
+    final name = '${compression[0].toUpperCase()}${compression.substring(1)}';
+    return 'From your storage · $name copy';
   }
 
   /// Android's image decoder can't always show HEIC; convert those to JPEG.
@@ -349,15 +462,25 @@ class _FullImageState extends State<_FullImage> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
+    if (_isPlayable) {
+      return VideoView(
+        session: widget.session,
+        item: item,
+        poster: _preview,
+        name: _record?.name,
+        chromeVisible: widget.chromeVisible,
+        active: widget.active,
+      );
+    }
     if (item.kind != MediaKind.image) {
-      final record = item.photoId == null
-          ? null
-          : widget.session.db.photo(item.photoId!);
+      final record = _record;
       return _FileHero(
         kind: item.kind,
         preview: _preview,
         name: record?.name,
         size: record?.size,
+        text: _text,
+        onSave: widget.onSave,
       );
     }
     final bytes = _full ?? _preview;
@@ -402,80 +525,133 @@ class _FullImageState extends State<_FullImage> {
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white70),
             ),
+          )
+        else if (widget.chromeVisible ? _sourceLabel : null case final label?)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 96,
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white54, fontSize: 12),
+            ),
           ),
       ],
     );
   }
 }
 
-/// What a video or a document looks like in the viewer: its own preview if
-/// the phone made one, and what it is underneath.
+/// What a document looks like in the viewer: its own preview if the phone
+/// made one, the first page of it when it's text, and what it is underneath.
+/// Videos and sound don't come through here — they play.
 class _FileHero extends StatelessWidget {
   final MediaKind kind;
   final Uint8List? preview;
   final String? name;
   final int? size;
 
+  /// The contents, when the file is short and made of text.
+  final String? text;
+
+  /// Offered when the file isn't on this phone yet.
+  final VoidCallback? onSave;
+
   const _FileHero({
     required this.kind,
     required this.preview,
     required this.name,
     required this.size,
+    this.text,
+    this.onSave,
   });
 
   @override
   Widget build(BuildContext context) {
     final preview = this.preview;
-    final video = kind == MediaKind.video;
+    final text = this.text;
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (preview != null)
-          Image.memory(
-            preview,
-            fit: BoxFit.contain,
-            gaplessPlayback: true,
-            errorBuilder: (_, _, _) => const SizedBox.shrink(),
-          ),
-        Center(
-          child: Container(
-            margin: const EdgeInsets.all(32),
-            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
-            decoration: BoxDecoration(
-              color: Colors.black54,
-              borderRadius: BorderRadius.circular(20),
+        if (text != null)
+          // The file itself, held off the chrome at top and bottom.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 110, 20, 120),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  text,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    height: 1.45,
+                  ),
+                ),
+              ),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  video ? Icons.movie_outlined : Icons.description_outlined,
-                  size: 44,
-                  color: Colors.white,
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  name ?? (video ? 'Video' : 'File'),
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white, fontSize: 16),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  [
-                    if (size != null) fileSize(size!),
-                    video
-                        ? 'Save it to your phone to watch it'
-                        : 'Save it to open it in another app',
-                  ].join(' · '),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
-                ),
-              ],
+          )
+        else ...[
+          if (preview != null)
+            Image.memory(
+              preview,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            ),
+          Center(
+            child: Container(
+              margin: const EdgeInsets.all(32),
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.description_outlined,
+                    size: 44,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    name ?? 'File',
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    [
+                      if (size != null) fileSize(size!),
+                      'Happy Drive can\'t open this kind of file',
+                    ].join(' · '),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  if (onSave != null) ...[
+                    const SizedBox(height: 14),
+                    FilledButton.tonalIcon(
+                      onPressed: onSave,
+                      icon: const Icon(Icons.download_outlined, size: 18),
+                      label: const Text('Save to this phone'),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 40),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
-        ),
+        ],
       ],
     );
   }

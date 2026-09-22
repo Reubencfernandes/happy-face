@@ -303,26 +303,39 @@ class LocalDb {
       return c.isEmpty ? '' : ' AND ${c.join(' AND ')}';
     }
 
-    if (filter != TimelineFilter.localOnly) {
-      final stateFilter = switch (filter) {
-        TimelineFilter.backedUp => ' AND d.asset_id IS NOT NULL',
-        TimelineFilter.cloudOnly => ' AND d.asset_id IS NULL',
-        _ => '',
-      };
-      parts.add(
-        'SELECT p.id AS photo_id, MIN(d.asset_id) AS asset_id, p.taken_at AS taken_at, '
-        'p.tz AS tz, $cloudSort AS sort_key, '
-        "json_extract(p.json, '\$.mime') AS mime, "
-        "CASE WHEN MIN(d.asset_id) IS NULL THEN 'cloud' ELSE 'synced' END AS state "
-        'FROM photos p LEFT JOIN device_assets d ON d.photo_id = p.id '
-        'WHERE 1=1${range('p.taken_at')}${placeFilter()} '
-        'GROUP BY p.id HAVING 1=1${stateFilter.replaceAll('d.asset_id', 'MIN(d.asset_id)')}',
-      );
-    }
+    // A photo edited since it was backed up is on the phone in a version the
+    // bucket hasn't got, so it counts as not backed up — the same rule
+    // [pendingAssets] and [backupStats] use. Without this the grid badged it
+    // "backed up" while the app queued it for upload.
+    const stale =
+        "MIN(CASE WHEN d.uploaded_modified_at IS d.modified_at "
+        "THEN 0 ELSE 1 END)";
+    // The cloud side also answers "not backed up" now, for those stale ones.
+    final stateFilter = switch (filter) {
+      TimelineFilter.backedUp =>
+        ' AND MIN(d.asset_id) IS NOT NULL AND $stale = 0',
+      TimelineFilter.cloudOnly => ' AND MIN(d.asset_id) IS NULL',
+      TimelineFilter.localOnly =>
+        ' AND MIN(d.asset_id) IS NOT NULL AND $stale = 1',
+      TimelineFilter.all => '',
+    };
+    parts.add(
+      'SELECT p.id AS photo_id, MIN(d.asset_id) AS asset_id, p.taken_at AS taken_at, '
+      'p.tz AS tz, $cloudSort AS sort_key, '
+      "json_extract(p.json, '\$.mime') AS mime, "
+      "CASE WHEN MIN(d.asset_id) IS NULL THEN 'cloud' "
+      "WHEN $stale = 1 THEN 'local' ELSE 'synced' END AS state "
+      'FROM photos p LEFT JOIN device_assets d ON d.photo_id = p.id '
+      'WHERE 1=1${range('p.taken_at')}${placeFilter()} '
+      'GROUP BY p.id HAVING 1=1$stateFilter',
+    );
     final placeRequested = country != null || place != null;
+    // Photos that are only on the phone belong here whatever the sort. They
+    // used to be dropped when sorting by upload date, so the one view that
+    // asks "what isn't backed up yet" could come back empty. They have no
+    // upload date to sort by, so they take their place by date taken.
     if ((filter == TimelineFilter.all || filter == TimelineFilter.localOnly) &&
-        !placeRequested &&
-        sort == TimelineSort.taken) {
+        !placeRequested) {
       parts.add(
         "SELECT NULL AS photo_id, d.asset_id AS asset_id, d.taken_at AS taken_at, d.tz AS tz, "
         "d.taken_at AS sort_key, "

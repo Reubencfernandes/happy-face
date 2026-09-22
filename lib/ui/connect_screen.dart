@@ -20,6 +20,18 @@ class ConnectResult {
   const ConnectResult(this.account, this.hasLibrary);
 }
 
+/// Which bucket the library should live in: a fresh one, or one that is
+/// already in the account. A second phone, or a reinstall, always wants the
+/// second — and until now the screen only really offered the first.
+enum BucketMode { create, existing }
+
+/// A bucket found in the account, and whether Happy Drive has been here.
+class _FoundBucket {
+  final String name;
+  final bool? hasLibrary;
+  const _FoundBucket(this.name, this.hasLibrary);
+}
+
 class ConnectScreen extends StatefulWidget {
   final void Function(ConnectResult result) onConnected;
   final BucketClientFactory clientFactory;
@@ -45,37 +57,58 @@ class _ConnectScreenState extends State<ConnectScreen> {
     text: widget.previous?.accessKeyId,
   );
   final _secret = TextEditingController();
+
   // A new library gets its own name, so a second one never collides with
   // the first and nobody has to invent one.
-  late final _bucket = TextEditingController(
-    text: widget.previous?.bucket ?? generateBucketName(),
-  );
-  bool _busy = false, _obscure = true;
+  final _newBucket = TextEditingController(text: generateBucketName());
 
-  /// The bucket name is chosen for you; this opens the field to change it.
-  bool _advanced = false;
+  /// Kept apart from the new-bucket name, so switching between the two
+  /// doesn't throw away what was typed or found.
+  late final _existingBucket = TextEditingController(
+    text: widget.previous?.bucket,
+  );
+
+  /// Someone coming back already has a bucket; a new phone doesn't.
+  late BucketMode _mode = widget.previous == null
+      ? BucketMode.create
+      : BucketMode.existing;
+
+  bool _busy = false, _obscure = true, _browsing = false;
   String? _error;
 
   /// Set when the bucket turns out to be public, until the user fixes it.
   StoredAccount? _publicBucket;
 
+  TextEditingController get _bucket =>
+      _mode == BucketMode.create ? _newBucket : _existingBucket;
+
   @override
   void dispose() {
-    for (final c in [_username, _accessKey, _secret, _bucket]) {
+    for (final c in [
+      _username,
+      _accessKey,
+      _secret,
+      _newBucket,
+      _existingBucket,
+    ]) {
       c.dispose();
     }
     super.dispose();
   }
 
+  /// The account the fields describe, for [bucket] or the chosen one.
+  StoredAccount _accountFor([String? bucket]) => StoredAccount(
+    namespace: _username.text.trim(),
+    bucket: bucket ?? _bucket.text.trim(),
+    accessKeyId: _accessKey.text.trim(),
+    secretAccessKey: _secret.text.trim(),
+  );
+
   Future<void> _connect() async {
     if (!_form.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
-    final account = StoredAccount(
-      namespace: _username.text.trim(),
-      bucket: _bucket.text.trim(),
-      accessKeyId: _accessKey.text.trim(),
-      secretAccessKey: _secret.text.trim(),
-    );
+    final account = _accountFor();
+    final creating = _mode == BucketMode.create;
     setState(() {
       _busy = true;
       _error = null;
@@ -83,21 +116,39 @@ class _ConnectScreenState extends State<ConnectScreen> {
     });
     final client = widget.clientFactory(account);
     try {
-      if (!await client.bucketExists()) {
-        await client.createBucket();
+      final exists = await client.bucketExists();
+      if (!exists && !creating) {
+        // Don't quietly make a bucket the user meant to reuse: a typo would
+        // leave them staring at an empty library wondering where it went.
+        setState(
+          () => _error =
+              'There\'s no bucket named "${account.bucket}" in this account. '
+              'Check the spelling, tap Browse to pick one, or switch to '
+              '"New bucket" to make it.',
+        );
+        return;
+      }
+      if (!exists) await client.createBucket();
+      final keys = await client.headObject(BucketLayout.keys);
+      if (exists && creating && keys != null) {
+        setState(
+          () => _error =
+              '"${account.bucket}" already holds a Happy Drive library. '
+              'Switch to "My bucket" to open it, or pick another name.',
+        );
+        return;
       }
       if (await client.isPubliclyExposed(probeKey: BucketLayout.keys)) {
         setState(() => _publicBucket = account);
         return;
       }
-      final hasLibrary = await client.headObject(BucketLayout.keys) != null;
       if (!mounted) return;
       // This page sits on top of the app's main screen when it was reached
       // from the welcome screen, so step back before handing over.
       final connected = widget.onConnected;
       final navigator = Navigator.of(context);
       if (navigator.canPop()) navigator.pop();
-      connected(ConnectResult(account, hasLibrary));
+      connected(ConnectResult(account, keys != null));
     } on S3Exception catch (e) {
       setState(
         () => _error = e.isNotFound
@@ -121,6 +172,105 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
   }
 
+  /// Lists the account's buckets and marks the ones Happy Drive knows.
+  Future<void> _browse() async {
+    if (_username.text.trim().isEmpty ||
+        _accessKey.text.trim().length < 8 ||
+        _secret.text.trim().length < 8) {
+      setState(
+        () => _error =
+            'Fill in your username, access key and secret first — that\'s '
+            'what listing your buckets needs.',
+      );
+      return;
+    }
+    setState(() {
+      _browsing = true;
+      _error = null;
+    });
+    // Any valid name will do: listing asks about the namespace, not a bucket.
+    final client = widget.clientFactory(_accountFor(_newBucket.text.trim()));
+    List<String>? names;
+    try {
+      names = await client.listBuckets();
+    } catch (_) {
+      names = null;
+    } finally {
+      client.close();
+    }
+    if (!mounted) return;
+    if (names == null) {
+      setState(() {
+        _browsing = false;
+        _error =
+            'Hugging Face didn\'t list your buckets — it doesn\'t always. '
+            'Type the bucket\'s name instead; you can see it at '
+            'huggingface.co/settings/storage.';
+      });
+      return;
+    }
+    final found = await _withLibraries(names);
+    if (!mounted) return;
+    setState(() => _browsing = false);
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.7,
+        maxWidth: 560,
+      ),
+      builder: (context) => _BucketSheet(buckets: found),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _mode = BucketMode.existing;
+      _existingBucket.text = picked;
+      _error = null;
+    });
+  }
+
+  /// Asks each bucket whether it holds a library, a few at a time so a big
+  /// account doesn't fire off fifty requests at once.
+  Future<List<_FoundBucket>> _withLibraries(List<String> names) async {
+    const atOnce = 6;
+    const most = 24;
+    final out = <_FoundBucket>[];
+    final looked = names.take(most).toList();
+    for (var i = 0; i < looked.length; i += atOnce) {
+      final slice = looked.skip(i).take(atOnce);
+      out.addAll(
+        await Future.wait([
+          for (final name in slice)
+            () async {
+              final client = widget.clientFactory(_accountFor(name));
+              try {
+                return _FoundBucket(
+                  name,
+                  await client.headObject(BucketLayout.keys) != null,
+                );
+              } catch (_) {
+                // A bucket these keys can't read still belongs in the list.
+                return _FoundBucket(name, null);
+              } finally {
+                client.close();
+              }
+            }(),
+        ]),
+      );
+    }
+    for (final name in names.skip(most)) {
+      out.add(_FoundBucket(name, null));
+    }
+    // Libraries first: that's what someone browsing is looking for.
+    out.sort((a, b) {
+      final byLibrary = ((b.hasLibrary ?? false) ? 1 : 0).compareTo(
+        (a.hasLibrary ?? false) ? 1 : 0,
+      );
+      return byLibrary != 0 ? byLibrary : a.name.compareTo(b.name);
+    });
+    return out;
+  }
+
   void _showHelp() => showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -132,38 +282,38 @@ class _ConnectScreenState extends State<ConnectScreen> {
     builder: (context) => const _HelpSheet(),
   );
 
+  static final _namePattern = RegExp(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$');
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final locked = _busy || _browsing;
     return Form(
       key: _form,
       child: AuthPage(
         title: 'Let\'s get\nStarted',
         subtitle:
             'Happy Drive keeps your photos in a private Hugging Face bucket '
-            'that belongs to you. It needs three things to reach it.',
-        onBack: _busy ? null : () => Navigator.of(context).maybePop(),
+            'that belongs to you. Tell it how to reach yours.',
+        onBack: locked ? null : () => Navigator.of(context).maybePop(),
         children: [
           TextFormField(
             controller: _username,
-            enabled: !_busy,
+            enabled: !locked,
             autocorrect: false,
             textInputAction: TextInputAction.next,
             decoration: authField(
               hint: 'Hugging Face username',
               icon: Icons.person_outline,
             ),
-            validator: (v) =>
-                RegExp(
-                  r'^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$',
-                ).hasMatch(v?.trim() ?? '')
+            validator: (v) => _namePattern.hasMatch(v?.trim() ?? '')
                 ? null
                 : 'Enter your username, e.g. reuben',
           ),
           const SizedBox(height: 12),
           TextFormField(
             controller: _accessKey,
-            enabled: !_busy,
+            enabled: !locked,
             autocorrect: false,
             enableSuggestions: false,
             textInputAction: TextInputAction.next,
@@ -175,7 +325,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
           const SizedBox(height: 12),
           TextFormField(
             controller: _secret,
-            enabled: !_busy,
+            enabled: !locked,
             obscureText: _obscure,
             autocorrect: false,
             enableSuggestions: false,
@@ -200,40 +350,83 @@ class _ConnectScreenState extends State<ConnectScreen> {
                 ? null
                 : 'Paste the secret shown with the key',
           ),
-          if (_advanced) ...[
-            const SizedBox(height: 12),
+          const SizedBox(height: 22),
+          Text(
+            'Where the photos go',
+            style: theme.textTheme.titleSmall?.copyWith(color: inkText),
+          ),
+          const SizedBox(height: 10),
+          _ModeSwitch(
+            mode: _mode,
+            enabled: !locked,
+            onChanged: (m) => setState(() {
+              _mode = m;
+              _error = null;
+            }),
+          ),
+          const SizedBox(height: 12),
+          if (_mode == BucketMode.create)
             TextFormField(
-              controller: _bucket,
-              enabled: !_busy,
+              key: const ValueKey('newBucket'),
+              controller: _newBucket,
+              enabled: !locked,
               autocorrect: false,
               decoration: authField(
                 hint: 'Bucket name',
-                icon: Icons.inventory_2_outlined,
-                helper: 'Created for you if it doesn\'t exist yet',
+                icon: Icons.add_circle_outline,
+                helper: 'A new private bucket, made in your account',
                 suffix: IconButton(
                   tooltip: 'Suggest another name',
                   iconSize: 19,
                   color: inkMuted,
                   icon: const Icon(Icons.casino_outlined),
-                  onPressed: _busy
+                  onPressed: locked
                       ? null
-                      : () =>
-                            setState(() => _bucket.text = generateBucketName()),
+                      : () => setState(
+                          () => _newBucket.text = generateBucketName(),
+                        ),
                 ),
               ),
-              validator: (v) =>
-                  RegExp(
-                    r'^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$',
-                  ).hasMatch(v?.trim() ?? '')
+              validator: (v) => _namePattern.hasMatch(v?.trim() ?? '')
                   ? null
                   : 'Letters, numbers, dots, dashes',
+            )
+          else ...[
+            TextFormField(
+              key: const ValueKey('existingBucket'),
+              controller: _existingBucket,
+              enabled: !locked,
+              autocorrect: false,
+              decoration: authField(
+                hint: 'Bucket name',
+                icon: Icons.inventory_2_outlined,
+                helper: 'The bucket your library is already in',
+              ),
+              validator: (v) => _namePattern.hasMatch(v?.trim() ?? '')
+                  ? null
+                  : 'Enter the name of your bucket, or tap Browse',
+            ),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: locked ? null : _browse,
+                icon: _browsing
+                    ? const SizedBox(
+                        width: 15,
+                        height: 15,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.search, size: 18),
+                label: Text(_browsing ? 'Looking…' : 'Browse my buckets'),
+              ),
             ),
           ],
-          const SizedBox(height: 10),
+          const SizedBox(height: 4),
           Align(
             alignment: Alignment.centerRight,
             child: InkWell(
-              onTap: _busy ? null : _showHelp,
+              onTap: locked ? null : _showHelp,
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Text(
@@ -254,18 +447,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   '${_publicBucket!.namespace}/${_publicBucket!.bucket} → Settings → Private, then tap Connect again.',
             ),
           const SizedBox(height: 14),
-          AuthButton(label: 'Connect', busy: _busy, onPressed: _connect),
-          const SizedBox(height: 16),
-          // The bucket is made for you, so this says which one — and lets
-          // anyone with a library already point at theirs.
-          AuthFootnote(
-            text: _advanced
-                ? 'Happy Drive will use this bucket.'
-                : 'New private bucket: "${_bucket.text}".',
-            action: _advanced ? 'Hide' : 'Change',
-            onTap: _busy ? null : () => setState(() => _advanced = !_advanced),
+          AuthButton(
+            label: 'Connect',
+            busy: _busy,
+            onPressed: _browsing ? null : _connect,
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 18),
           Text(
             'Your keys stay in this phone\'s secure storage and are only ever '
             'sent to Hugging Face.',
@@ -275,6 +462,124 @@ class _ConnectScreenState extends State<ConnectScreen> {
               height: 1.4,
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Two words, one lit: make a bucket, or point at one that exists.
+class _ModeSwitch extends StatelessWidget {
+  final BucketMode mode;
+  final bool enabled;
+  final ValueChanged<BucketMode> onChanged;
+
+  const _ModeSwitch({
+    required this.mode,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget half(BucketMode value, IconData icon, String label) {
+      final on = value == mode;
+      return Expanded(
+        child: Semantics(
+          button: true,
+          selected: on,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: enabled ? () => onChanged(value) : null,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              padding: const EdgeInsets.symmetric(vertical: 11),
+              decoration: BoxDecoration(
+                color: on ? accent : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, size: 17, color: on ? ink : inkMuted),
+                  const SizedBox(width: 8),
+                  // Large text settings make these words wider than their
+                  // half; they shrink rather than spill.
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: on ? ink : inkMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: inkSurface,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          half(BucketMode.create, Icons.add_circle_outline, 'New bucket'),
+          half(BucketMode.existing, Icons.inventory_2_outlined, 'My bucket'),
+        ],
+      ),
+    );
+  }
+}
+
+/// The buckets in the account, with the ones Happy Drive has used marked.
+class _BucketSheet extends StatelessWidget {
+  final List<_FoundBucket> buckets;
+  const _BucketSheet({required this.buckets});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+        shrinkWrap: true,
+        children: [
+          Text('Your buckets', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 4),
+          Text(
+            buckets.isEmpty
+                ? 'This account has no buckets yet. Go back and make a new one.'
+                : 'Pick the one your library is in.',
+            style: theme.textTheme.bodyMedium?.copyWith(color: inkMuted),
+          ),
+          const SizedBox(height: 12),
+          for (final b in buckets)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                b.hasLibrary == true
+                    ? Icons.photo_library_outlined
+                    : Icons.inventory_2_outlined,
+                color: b.hasLibrary == true ? accent : inkMuted,
+              ),
+              title: Text(b.name),
+              subtitle: Text(switch (b.hasLibrary) {
+                true => 'Has a Happy Drive library',
+                false => 'No library in here yet',
+                null => 'Couldn\'t look inside this one',
+              }),
+              onTap: () => Navigator.pop(context, b.name),
+            ),
         ],
       ),
     );
@@ -439,8 +744,10 @@ class _HelpSheet extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      'Happy Drive makes the bucket for you, with a name of '
-                      'its own. If you would rather make it yourself, use '
+                      'Then choose the bucket. "New bucket" makes one for you '
+                      'with a name of its own; "My bucket" opens a library '
+                      'that is already there — tap Browse to see them. If you '
+                      'would rather make the bucket yourself, use '
                       'huggingface.co/new-bucket with Private ticked — Happy '
                       'Drive refuses to use a public bucket.',
                       style: theme.textTheme.bodySmall?.copyWith(

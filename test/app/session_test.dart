@@ -1,3 +1,4 @@
+import 'dart:io' show SocketException;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -98,6 +99,7 @@ void main() {
     });
     final results = await session.backUpPending();
 
+    expect(session.upload!.stopped, isFalse, reason: 'it ran to the end');
     expect(
       results.where((r) => r.outcome == UploadOutcome.uploaded),
       hasLength(119),
@@ -129,7 +131,7 @@ void main() {
       await session.scanGallery();
 
       final results = await session.backUpPending(budget: Duration.zero);
-      expect(results, hasLength(50), reason: 'exactly one batch');
+      expect(results, hasLength(16), reason: 'exactly one batch');
       expect(session.uploading, isFalse);
 
       // The next pass picks up where this one stopped.
@@ -144,12 +146,138 @@ void main() {
     addTearDown(session.dispose);
     await session.scanGallery();
     session.addListener(() {
-      if ((session.upload?.completed ?? 0) >= 10) session.cancelUpload();
+      if ((session.upload?.settled ?? 0) >= 10) session.cancelUpload();
+    });
+    final results = await session.backUpPending();
+
+    expect(session.uploading, isFalse);
+    expect(session.stopping, isFalse, reason: 'the stop has landed');
+    expect(
+      session.upload!.stopped,
+      isTrue,
+      reason: 'the run knows it was stopped, so it can say so',
+    );
+    expect(session.db.backupStats().pending, greaterThan(100));
+    // A stop is not a failure. Every photo it never got to is simply left
+    // for next time rather than being reported as an error.
+    expect(
+      results.where((r) => r.outcome == UploadOutcome.failed),
+      isEmpty,
+      reason: 'stopping must not manufacture failures',
+    );
+    expect(session.upload!.failed, 0);
+    // And it stops promptly rather than grinding out another whole batch.
+    expect(gallery.resolved, lessThanOrEqualTo(48));
+  });
+
+  test('a stop during the prepare gap is not forgotten', () async {
+    final gallery = FakeGallery(200);
+    final session = sessionWith(gallery);
+    addTearDown(session.dispose);
+    await session.scanGallery();
+    // Stop the moment the very first batch is being got ready, which is the
+    // window a stop used to fall into and be wiped by the next batch.
+    session.addListener(() {
+      if (session.upload?.stage == BackupStage.preparing) {
+        session.cancelUpload();
+      }
+    });
+    final results = await session.backUpPending();
+
+    expect(session.uploading, isFalse);
+    expect(results.where((r) => r.outcome == UploadOutcome.failed), isEmpty);
+    expect(
+      session.db.backupStats().pending,
+      greaterThan(150),
+      reason: 'barely anything should have gone up',
+    );
+  });
+
+  test('the library is not re-queried on every progress tick', () async {
+    final gallery = FakeGallery(60);
+    final session = sessionWith(gallery);
+    addTearDown(session.dispose);
+    await session.scanGallery();
+
+    var ticks = 0;
+    var revisions = 0;
+    var lastRevision = session.revision;
+    session.addListener(() {
+      ticks++;
+      if (session.revision != lastRevision) {
+        lastRevision = session.revision;
+        revisions++;
+      }
     });
     await session.backUpPending();
-    expect(gallery.resolved, lessThanOrEqualTo(100));
-    expect(session.uploading, isFalse);
-    expect(session.db.backupStats().pending, greaterThan(100));
+
+    expect(ticks, greaterThan(10), reason: 'the bar still updates often');
+    // Each revision bump re-runs an unbounded query in three live views.
+    expect(
+      revisions,
+      lessThan(10),
+      reason: 'the expensive reload is throttled, not per tick',
+    );
+  });
+
+  test(
+    'a bucket deleted on the website is called out, not shrugged off',
+    () async {
+      final session = sessionWith(FakeGallery(2));
+      addTearDown(session.dispose);
+      await session.scanGallery();
+      await session.backUpPending();
+      expect(session.db.timeline(), isNotEmpty);
+
+      // Someone deletes the bucket on huggingface.co. Everything 404s,
+      // including the bucket itself.
+      bucket.intercept = (r) =>
+          http.Response('<Error><Code>NoSuchBucket</Code></Error>', 404);
+      await session.sync(full: true);
+
+      expect(session.bucketMissing, isTrue);
+      expect(session.syncError, contains('no longer in your Hugging Face'));
+      expect(session.syncError, contains('happy-drive'));
+    },
+  );
+
+  test('a missing object is not mistaken for a deleted bucket', () async {
+    final session = sessionWith(FakeGallery(2));
+    addTearDown(session.dispose);
+    await session.scanGallery();
+    await session.backUpPending();
+
+    // One object is gone, but the bucket answers. A HEAD on the bucket
+    // itself has an empty key.
+    bucket.intercept = (r) => r.method == 'GET'
+        ? http.Response('<Error><Code>NoSuchKey</Code></Error>', 404)
+        : null;
+    await session.sync(full: true);
+
+    expect(session.bucketMissing, isFalse, reason: 'the bucket is still there');
+  });
+
+  test('a dropped connection is never reported as a deleted bucket', () async {
+    final session = sessionWith(FakeGallery(2));
+    addTearDown(session.dispose);
+    await session.scanGallery();
+    await session.backUpPending();
+
+    var seen = 0;
+    bucket.intercept = (r) {
+      seen++;
+      // The catalogue 404s, and then the bucket check can't get through.
+      return seen == 1
+          ? http.Response('<Error><Code>NoSuchKey</Code></Error>', 404)
+          : throw const SocketException('offline');
+    };
+    await session.sync(full: true);
+
+    expect(
+      session.bucketMissing,
+      isFalse,
+      reason: 'better silent than announcing a deletion because Wi-Fi dropped',
+    );
   });
 
   test('deleting frees bucket space and syncs to other devices', () async {
