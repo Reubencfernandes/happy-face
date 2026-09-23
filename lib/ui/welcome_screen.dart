@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+import 'dart:ui' show lerpDouble;
+
 import 'package:flutter/material.dart';
 
 import '../app/credentials.dart';
@@ -130,69 +133,156 @@ class WelcomeScreen extends StatelessWidget {
 /// The sunrise: the bottom rim of three huge circles sitting above the
 /// screen, so what shows is an arc of light over the ink. Drawn rather than
 /// shipped as an image, so it is sharp at any size.
-class _Glow extends StatelessWidget {
+///
+/// It rises into place when the screen opens, the wide haze first and the hot
+/// ember last, then keeps swelling gently, each arc out of step with the
+/// others, like a slow wave. With Reduce Motion on it simply sits still.
+class _Glow extends StatefulWidget {
   const _Glow();
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final width = constraints.maxWidth;
-      final height = constraints.maxHeight;
+  State<_Glow> createState() => _GlowState();
+}
 
-      /// A circle of [diameter] whose lowest point sits at [bottom], lit
-      /// along its rim and empty in the middle.
-      Widget dome(double diameter, double bottom, Color color, double alpha) =>
-          Positioned(
-            left: (width - diameter) / 2,
-            top: bottom - diameter,
-            width: diameter,
-            height: diameter,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  stops: const [0.0, 0.55, 0.78, 0.92, 1.0],
-                  colors: [
-                    Colors.transparent,
-                    color.withValues(alpha: alpha * 0.10),
-                    color.withValues(alpha: alpha * 0.55),
-                    color.withValues(alpha: alpha),
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-            ),
-          );
+class _GlowState extends State<_Glow> with TickerProviderStateMixin {
+  late final AnimationController _rise = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2400),
+  );
+  late final AnimationController _swell = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 10),
+  );
 
-      return ClipRect(
-        child: Stack(
-          children: [
-            // Haze, sun, then ember: cool cream outside, hot centre.
-            dome(width * 2.7, height * 0.50, glowHaze, 0.20),
-            dome(width * 2.15, height * 0.45, glowSun, 0.34),
-            dome(width * 1.55, height * 0.38, glowEmber, 0.30),
-            // A breath of warmth at the very top so the arc doesn't float.
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: height * 0.55,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      glowSun.withValues(alpha: 0.05),
-                      Colors.transparent,
-                    ],
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _rise.value = 1;
+      _swell.stop();
+    } else if (!_rise.isAnimating && _rise.value == 0) {
+      _rise.forward();
+      _swell.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _rise.dispose();
+    _swell.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RepaintBoundary(
+    child: LayoutBuilder(
+      builder: (context, constraints) => AnimatedBuilder(
+        animation: Listenable.merge([_rise, _swell]),
+        builder: (context, _) {
+          final width = constraints.maxWidth;
+          final height = constraints.maxHeight;
+
+          /// A circle of [diameter] whose lowest point rests at [bottom], lit
+          /// along its rim and empty in the middle. [delay] staggers when it
+          /// starts to rise; [phase] sets where it is in the swell.
+          Widget dome(
+            double diameter,
+            double bottom,
+            Color color,
+            double alpha, {
+            required double delay,
+            required double phase,
+          }) {
+            final risen = Curves.easeOutCubic.transform(
+              Interval(delay, delay + 0.7).transform(_rise.value),
+            );
+            final wave = math.sin((_swell.value + phase) * 2 * math.pi);
+            // From below the screen up to its place, then a small bob.
+            final rim =
+                lerpDouble(height * 1.1, bottom, risen)! +
+                wave * height * 0.012 * risen;
+            final size = diameter * (1 + wave * 0.015 * risen);
+            return Positioned(
+              left: (width - size) / 2,
+              top: rim - size,
+              width: size,
+              height: size,
+              child: Opacity(
+                opacity: risen.clamp(0.0, 1.0),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      stops: const [0.0, 0.55, 0.78, 0.92, 1.0],
+                      colors: [
+                        Colors.transparent,
+                        color.withValues(alpha: alpha * 0.10),
+                        color.withValues(alpha: alpha * 0.55),
+                        color.withValues(alpha: alpha),
+                        Colors.transparent,
+                      ],
+                    ),
                   ),
                 ),
               ),
+            );
+          }
+
+          return ClipRect(
+            child: Stack(
+              children: [
+                // Haze, sun, then ember: cool cream outside, hot centre.
+                dome(
+                  width * 2.7,
+                  height * 0.50,
+                  glowHaze,
+                  0.20,
+                  delay: 0.0,
+                  phase: 0.0,
+                ),
+                dome(
+                  width * 2.15,
+                  height * 0.45,
+                  glowSun,
+                  0.34,
+                  delay: 0.12,
+                  phase: 0.33,
+                ),
+                dome(
+                  width * 1.55,
+                  height * 0.38,
+                  glowEmber,
+                  0.30,
+                  delay: 0.24,
+                  phase: 0.66,
+                ),
+                // A breath of warmth at the very top so the arc doesn't float.
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: height * 0.55,
+                  child: Opacity(
+                    opacity: _rise.value,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            glowSun.withValues(alpha: 0.05),
+                            Colors.transparent,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      );
-    },
+          );
+        },
+      ),
+    ),
   );
 }

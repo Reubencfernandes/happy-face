@@ -292,11 +292,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
       key: _form,
       child: AuthPage(
         title: 'Let\'s get\nStarted',
-        subtitle:
-            'Happy Drive keeps your photos in a private Hugging Face bucket '
-            'that belongs to you. Tell it how to reach yours.',
         onBack: locked ? null : () => Navigator.of(context).maybePop(),
         children: [
+          // Most people arrive without keys, so the guide sits first, where
+          // it can't be missed, rather than as small print under the form.
+          // It stands in for a subtitle, so the form still fits a phone.
+          _HelpCard(onTap: locked ? null : _showHelp),
+          const SizedBox(height: 18),
           TextFormField(
             controller: _username,
             enabled: !locked,
@@ -422,20 +424,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
               ),
             ),
           ],
-          const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerRight,
-            child: InkWell(
-              onTap: locked ? null : _showHelp,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Text(
-                  'Where do I get these?',
-                  style: theme.textTheme.bodySmall?.copyWith(color: inkMuted),
-                ),
-              ),
-            ),
-          ),
           if (_error != null)
             AuthBanner(icon: Icons.error_outline, text: _error!),
           if (_publicBucket != null)
@@ -581,6 +569,62 @@ class _BucketSheet extends StatelessWidget {
               onTap: () => Navigator.pop(context, b.name),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// The way into the key guide: a lit card at the top of the form.
+class _HelpCard extends StatelessWidget {
+  final VoidCallback? onTap;
+
+  const _HelpCard({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: accent.withValues(alpha: 0.12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: accent.withValues(alpha: 0.45)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+          child: Row(
+            children: [
+              const Icon(Icons.vpn_key_outlined, color: accent, size: 24),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Where do I get these?',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: inkText,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'A one-minute guide, with pictures.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: inkMuted,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right_rounded, color: accent),
+            ],
+          ),
+        ),
       ),
     );
   }

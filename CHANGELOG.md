@@ -97,6 +97,14 @@ local mirror with only a vague "not found". It now says so plainly and offers
 to connect to another bucket — while telling that apart from one missing
 object and from a dropped connection, so bad Wi-Fi never announces a deletion.
 
+### Changed: the way in
+
+- The sunrise on the welcome screen rises into place when the app opens, then
+  keeps swelling gently. With Reduce Motion on it stays still.
+- The guide to getting your keys is a card at the top of the connect page
+  instead of small grey text under the form, where most people missed it. It
+  takes the subtitle's place, so the form still fits a phone.
+
 ### Also
 
 - A download that dies half way through is retried as a whole. Half a file is
