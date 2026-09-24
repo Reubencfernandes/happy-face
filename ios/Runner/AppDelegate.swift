@@ -36,6 +36,108 @@ import UIKit
         bitsPerChannel: bits
       ) { ok in DispatchQueue.main.async { result(ok) } }
     }
+
+    let device = FlutterMethodChannel(
+      name: "happy_drive/device", binaryMessenger: registrar.messenger())
+    device.setMethodCallHandler { call, result in
+      let args = call.arguments as? [String: Any]
+      switch call.method {
+      case "storage":
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        let values = try? home.resourceValues(forKeys: [
+          .volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey,
+        ])
+        guard let total = values?.volumeTotalCapacity,
+          let free = values?.volumeAvailableCapacityForImportantUsage
+        else { return result(nil) }
+        result(["total": Int64(total), "free": free])
+      case "pdfPageCount":
+        guard let path = args?["path"] as? String else { return result(nil) }
+        PdfPages.queue.async {
+          let count = PdfPages.document(path)?.numberOfPages
+          DispatchQueue.main.async {
+            if let count {
+              result(count)
+            } else {
+              result(FlutterError(code: "pdf", message: "unreadable", details: nil))
+            }
+          }
+        }
+      case "pdfRenderPage":
+        guard let path = args?["path"] as? String, let page = args?["page"] as? Int,
+          let width = args?["width"] as? Int
+        else { return result(nil) }
+        PdfPages.queue.async {
+          let jpeg = PdfPages.render(path: path, index: page, width: width)
+          DispatchQueue.main.async {
+            if let jpeg {
+              result(FlutterStandardTypedData(bytes: jpeg))
+            } else {
+              result(FlutterError(code: "pdf", message: "page \(page)", details: nil))
+            }
+          }
+        }
+      case "pdfClose":
+        PdfPages.queue.async { PdfPages.close() }
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+}
+
+/// Draws PDF pages with Core Graphics, for the in-app preview. The document
+/// stays open between pages, since they're asked for one after another as
+/// they scroll into view. Only touched on [queue].
+enum PdfPages {
+  static let queue = DispatchQueue(label: "happy_drive.pdf")
+  private static var path: String?
+  private static var doc: CGPDFDocument?
+
+  static func document(_ path: String) -> CGPDFDocument? {
+    if self.path == path, let doc { return doc }
+    close()
+    guard let opened = CGPDFDocument(URL(fileURLWithPath: path) as CFURL),
+      !opened.isEncrypted || opened.unlockWithPassword("")
+    else { return nil }
+    self.path = path
+    doc = opened
+    return opened
+  }
+
+  /// Page [index] (from 0) as a JPEG [width] pixels wide, on white.
+  static func render(path: String, index: Int, width: Int) -> Data? {
+    guard let page = document(path)?.page(at: index + 1) else { return nil }
+    let box = page.getBoxRect(.cropBox)
+    let rotated = page.rotationAngle % 180 != 0
+    let size = rotated ? CGSize(width: box.height, height: box.width) : box.size
+    guard size.width > 0, size.height > 0 else { return nil }
+    let scale = CGFloat(width) / size.width
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    format.opaque = true
+    let target = CGSize(width: CGFloat(width), height: (size.height * scale).rounded())
+    let image = UIGraphicsImageRenderer(size: target, format: format).image { ctx in
+      UIColor.white.setFill()
+      ctx.fill(CGRect(origin: .zero, size: target))
+      let cg = ctx.cgContext
+      // PDF space runs bottom-up; flip it, then let the page map itself
+      // (rotation included) into the box.
+      cg.translateBy(x: 0, y: target.height)
+      cg.scaleBy(x: 1, y: -1)
+      cg.concatenate(
+        page.getDrawingTransform(
+          .cropBox, rect: CGRect(origin: .zero, size: target), rotate: 0,
+          preserveAspectRatio: true))
+      cg.drawPDFPage(page)
+    }
+    return image.jpegData(compressionQuality: 0.85)
+  }
+
+  static func close() {
+    doc = nil
+    path = nil
   }
 }
 

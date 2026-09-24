@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../app/device.dart';
 import '../app/password_manager.dart';
 import '../app/session.dart';
 import '../crypto/vault.dart';
@@ -53,6 +55,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _usageError;
   bool _measuring = true;
 
+  /// The phone's own storage, and Happy Drive's share of it.
+  DeviceStorage? _device;
+  AppStorage? _app;
+
   /// Where the last profile lookup is remembered between runs, so the face
   /// is there immediately and offline.
   static const _profileKey = 'hfProfile';
@@ -67,6 +73,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _checkVisibility();
     _loadProfile();
     _measure();
+    _measurePhone();
+  }
+
+  Future<void> _measurePhone() async {
+    final device = await deviceStorage();
+    AppStorage? app;
+    try {
+      app = await appStorage();
+    } catch (_) {
+      app = null;
+    }
+    if (mounted) {
+      setState(() {
+        _device = device;
+        _app = app;
+      });
+    }
   }
 
   HfProfile? _cachedProfile() {
@@ -352,6 +375,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             enabled: _usage != null,
             onTap: _manageBuckets,
           ),
+          header('Phone storage'),
+          _PhoneStorageCard(device: _device, app: _app),
           header('Backup'),
           ListTile(
             leading: const Icon(Icons.high_quality_outlined),
@@ -412,6 +437,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             onTap: () async {
               await _session.photos.clearCache();
+              unawaited(_measurePhone());
               if (context.mounted) {
                 ScaffoldMessenger.of(
                   context,
@@ -1099,4 +1125,103 @@ class _PassphrasePromptState extends State<_PassphrasePrompt> {
       ),
     ],
   );
+}
+
+/// How full the phone is, and how much of that is Happy Drive.
+class _PhoneStorageCard extends StatelessWidget {
+  final DeviceStorage? device;
+  final AppStorage? app;
+  const _PhoneStorageCard({required this.device, required this.app});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    final device = this.device;
+    final app = this.app;
+    final colors = usageColors();
+    final mine = app?.total ?? 0;
+    final segments = [
+      UsageSegment(label: 'Happy Drive', bytes: mine, color: colors.first),
+      if (device != null)
+        UsageSegment(
+          label: 'Other apps and system',
+          bytes: max(0, device.used - mine),
+          color: theme.colorScheme.outline,
+        ),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (device == null && app == null)
+            Text('Measuring this phone…', style: muted)
+          else ...[
+            if (device != null) ...[
+              Text(
+                '${storageSize(device.free)} free of '
+                '${storageSize(device.total)}',
+                style: theme.textTheme.titleMedium,
+              ),
+              const SizedBox(height: 10),
+              UsageBar(segments: segments, total: device.total),
+              const SizedBox(height: 12),
+              for (final segment in segments)
+                UsageLegendRow(
+                  segment: segment,
+                  total: device.total,
+                  trailing: storageSize(segment.bytes),
+                ),
+              UsageLegendRow(
+                segment: UsageSegment(
+                  label: 'Free',
+                  bytes: device.free,
+                  color: theme.colorScheme.surfaceContainerHighest,
+                ),
+                total: device.total,
+                trailing: storageSize(device.free),
+              ),
+            ] else
+              Text('This phone doesn\'t say how full it is.', style: muted),
+            if (app != null) ...[
+              const Divider(height: 28),
+              Text('Inside Happy Drive', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 6),
+              for (final (label, bytes, note) in [
+                ('Library index', app.library, 'what\'s backed up, places'),
+                ('Thumbnails', app.thumbnails, 'encrypted, for scrolling'),
+                ('Temporary files', app.temporary, 'cleared by the phone'),
+              ])
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text.rich(
+                          TextSpan(
+                            text: label,
+                            children: [TextSpan(text: '  $note', style: muted)],
+                          ),
+                        ),
+                      ),
+                      Text(storageSize(bytes)),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 6),
+              Text(
+                'Your photos themselves are in your Hugging Face storage, not '
+                'here. Clearing the thumbnail cache below frees the '
+                'thumbnails.',
+                style: muted,
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
 }

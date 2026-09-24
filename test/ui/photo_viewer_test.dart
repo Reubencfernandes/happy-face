@@ -253,12 +253,12 @@ void main() {
     tester,
   ) async {
     await tester.runAsync(
-      () => store('cc04', 'taxes.pdf', 'application/pdf', Uint8List(64)),
+      () => store('cc04', 'taxes.zip', 'application/zip', Uint8List(64)),
     );
     await tester.runAsync(session.sync);
-    await pumpViewer(tester, cloudItem('cc04', 'application/pdf'));
+    await pumpViewer(tester, cloudItem('cc04', 'application/zip'));
 
-    expect(find.text('taxes.pdf'), findsOne);
+    expect(find.text('taxes.zip'), findsOne);
     expect(find.textContaining('can\'t open this kind of file'), findsOne);
     expect(find.text('Save to this phone'), findsOne);
   });

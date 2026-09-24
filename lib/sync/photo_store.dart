@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import '../crypto/vault.dart';
 import '../data/bucket_layout.dart';
+import '../data/catalogue.dart';
 import '../s3/s3_client.dart';
 
 /// Fetches and decrypts photos for display.
@@ -17,6 +18,10 @@ class PhotoStore {
   final int memoryEntries;
 
   final _memory = <String, Uint8List>{}; // insertion-ordered: an LRU
+
+  /// Looks up a photo's catalogue entry, which says whether its original
+  /// was stored whole or in pieces. Set by the session.
+  PhotoRecord? Function(String photoId)? records;
   final _inFlight = <String, Future<Uint8List?>>{};
 
   PhotoStore(
@@ -75,19 +80,85 @@ class PhotoStore {
     return clear;
   }
 
-  /// Downloads and decrypts the full original.
+  /// Downloads and decrypts the full original, into memory.
   ///
   /// [onProgress] follows the download itself, which for a video is most of
-  /// the wait — the decryption after it is quick.
+  /// the wait — the decryption after it is quick. For anything that could be
+  /// big, [originalToFile] is the one to use.
   Future<Uint8List> original(
     String photoId, {
     void Function(int received, int? total)? onProgress,
   }) async {
+    final record = records?.call(photoId);
+    if (record?.parts case final count?) {
+      final out = BytesBuilder(copy: false);
+      await _eachPart(photoId, count, record!.size, out.add, onProgress);
+      return out.takeBytes();
+    }
     final key = BucketLayout.original(photoId);
     return vault.open(
       await bucket.getObject(key, onReceived: onProgress),
       context: key,
     );
+  }
+
+  /// Downloads and decrypts the original into [file], a piece at a time
+  /// for one stored in pieces, so a video of any length fits in memory.
+  Future<void> originalToFile(
+    String photoId,
+    File file, {
+    void Function(int received, int? total)? onProgress,
+  }) async {
+    final record = records?.call(photoId);
+    final count = record?.parts;
+    if (count == null) {
+      await file.writeAsBytes(
+        await original(photoId, onProgress: onProgress),
+        flush: true,
+      );
+      return;
+    }
+    final sink = await file.open(mode: FileMode.write);
+    try {
+      await _eachPart(
+        photoId,
+        count,
+        record!.size,
+        (clear) => sink.writeFromSync(clear),
+        onProgress,
+      );
+      await sink.flush();
+    } finally {
+      await sink.close();
+    }
+  }
+
+  /// Fetches and opens each piece in order, handing the plain bytes on.
+  /// Progress counts the whole file, not the piece.
+  Future<void> _eachPart(
+    String photoId,
+    int count,
+    int size,
+    void Function(Uint8List clear) take,
+    void Function(int received, int? total)? onProgress,
+  ) async {
+    final total = size + count * Vault.sealOverhead;
+    var done = 0;
+    for (var i = 0; i < count; i++) {
+      final sealed = await bucket.getObject(
+        BucketLayout.part(photoId, i),
+        onReceived: onProgress == null
+            ? null
+            : (received, _) => onProgress(done + received, total),
+      );
+      done += sealed.length;
+      take(
+        await vault.open(
+          sealed,
+          context: BucketLayout.partContext(photoId, i, count),
+        ),
+      );
+    }
   }
 
   /// Removes a photo's cached data from this device.

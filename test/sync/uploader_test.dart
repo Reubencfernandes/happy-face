@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -9,6 +10,7 @@ import 'package:happy_drive/data/remote_catalogue.dart';
 import 'package:happy_drive/media/compress.dart';
 import 'package:happy_drive/media/file_compress.dart';
 import 'package:happy_drive/media/metadata.dart';
+import 'package:happy_drive/sync/photo_store.dart';
 import 'package:happy_drive/sync/uploader.dart';
 import 'package:http/http.dart' as http;
 
@@ -80,7 +82,11 @@ void main() {
   late FakeCodec codec;
   late FakeFileCodec files;
 
-  Uploader uploader({int batchSize = 3}) => Uploader(
+  Uploader uploader({
+    int batchSize = 3,
+    int singleObjectBytes = Uploader.defaultSingleObjectBytes,
+    int partBytes = Uploader.defaultPartBytes,
+  }) => Uploader(
     bucket: bucket.client(),
     vault: vault,
     catalogue: catalogue,
@@ -88,6 +94,8 @@ void main() {
     codec: codec,
     files: files,
     batchSize: batchSize,
+    singleObjectBytes: singleObjectBytes,
+    partBytes: partBytes,
     clock: () => DateTime.utc(2026, 9, 15, 12),
   );
 
@@ -488,14 +496,14 @@ void main() {
     expect(progress.last.done, isTrue);
   });
 
-  test('a file too big to hold is refused without being read', () async {
-    // The size the phone reports, not the bytes. Reading a 2 GB video to
-    // discover it is 2 GB is what killed the app on a real device.
+  test('a file over the limit is refused without being read', () async {
+    // The size the phone reports, not the bytes. Reading a huge video to
+    // discover it is huge is what killed the app on a real device.
     var reads = 0;
     final results = await uploader().run([
       UploadSource(
         name: 'holiday.mp4',
-        size: 2 * 1024 * 1024 * 1024,
+        size: Uploader.maxUploadBytes + 1,
         read: () async {
           reads++;
           return Uint8List(0);
@@ -505,20 +513,133 @@ void main() {
 
     expect(reads, 0, reason: 'the file is never opened');
     expect(results.single.outcome, UploadOutcome.failed);
-    expect(results.single.error, contains('2048 MB'));
-    expect(results.single.error, contains('most it can handle'));
+    expect(results.single.error, contains('most Happy Drive can handle'));
     expect(bucket.objects, isEmpty);
   });
 
-  test('a file whose size is unknown is still checked once read', () async {
-    final results = await uploader().run([
-      UploadSource(
-        name: 'mystery.bin',
-        read: () async => Uint8List(Uploader.maxUploadBytes + 1),
-      ),
-    ]);
-    expect(results.single.outcome, UploadOutcome.failed);
-    expect(results.single.error, contains('most it can handle'));
+  test(
+    'a big file with no file to read in pieces is not pulled into memory',
+    () async {
+      var reads = 0;
+      final results = await uploader().run([
+        UploadSource(
+          name: 'holiday.mp4',
+          size: 2 * 1024 * 1024 * 1024,
+          read: () async {
+            reads++;
+            return Uint8List(0);
+          },
+        ),
+      ]);
+      expect(reads, 0);
+      expect(results.single.outcome, UploadOutcome.failed);
+      expect(results.single.error, contains('2048 MB'));
+      expect(bucket.objects, isEmpty);
+    },
+  );
+
+  group('files bigger than one object', () {
+    late Directory temp;
+    setUp(() => temp = Directory.systemTemp.createTempSync('parts'));
+    tearDown(() => temp.deleteSync(recursive: true));
+
+    /// A 250-byte "video": seven pieces of 40, the last one 10.
+    Uint8List video([int seed = 1]) =>
+        Uint8List.fromList([for (var i = 0; i < 250; i++) (i * seed) & 255]);
+
+    Uploader small() =>
+        uploader(batchSize: 1, singleObjectBytes: 100, partBytes: 40);
+
+    UploadSource onDisk(Uint8List bytes, {String name = 'trip.mp4'}) {
+      final file = File('${temp.path}/$name')..writeAsBytesSync(bytes);
+      return UploadSource(
+        name: name,
+        size: bytes.length,
+        read: () => throw StateError('read whole'),
+        file: () async => file,
+      );
+    }
+
+    test('go up in pieces read off the disk, and come back whole', () async {
+      final results = await small().run([onDisk(video())]);
+      expect(results.single.outcome, UploadOutcome.uploaded);
+      final id = results.single.photoId!;
+      final record = db.photo(id)!;
+      expect(record.parts, 7);
+      expect(record.partSize, 40);
+      expect(record.size, 250);
+      expect(bucket.objects.containsKey(BucketLayout.original(id)), isFalse);
+      for (var i = 0; i < 7; i++) {
+        expect(bucket.objects.containsKey(BucketLayout.part(id, i)), isTrue);
+      }
+      // The same id the whole file would have had, so it still dedupes.
+      expect(id, vault.photoIdFor(video()));
+
+      final store = PhotoStore(bucket.client(), vault)..records = db.photo;
+      expect(await store.original(id), video());
+      final out = File('${temp.path}/out.mp4');
+      final progress = <int>[];
+      await store.originalToFile(
+        id,
+        out,
+        onProgress: (received, _) => progress.add(received),
+      );
+      expect(out.readAsBytesSync(), video());
+      expect(progress.last, 250 + 7 * Vault.sealOverhead);
+    });
+
+    test('a piece moved to another place won\'t open', () async {
+      final results = await small().run([onDisk(video())]);
+      final id = results.single.photoId!;
+      final swapped = bucket.objects[BucketLayout.part(id, 1)]!;
+      bucket.objects[BucketLayout.part(id, 1)] =
+          bucket.objects[BucketLayout.part(id, 2)]!;
+      bucket.objects[BucketLayout.part(id, 2)] = swapped;
+      final store = PhotoStore(bucket.client(), vault)..records = db.photo;
+      await expectLater(
+        store.original(id),
+        throwsA(isA<TamperedDataException>()),
+      );
+    });
+
+    test('a file already in memory is split too', () async {
+      final results = await small().run([
+        UploadSource(name: 'mystery.bin', read: () async => video(3)),
+      ]);
+      expect(results.single.outcome, UploadOutcome.uploaded);
+      expect(db.photo(results.single.photoId!)!.parts, 7);
+    });
+
+    test('an interrupted upload picks up where it stopped', () async {
+      var failNext = true;
+      bucket.intercept = (r) {
+        if (r.method == 'PUT' && r.url.path.endsWith('.3') && failNext) {
+          failNext = false;
+          return http.Response(
+            '<Error><Code>InternalError</Code></Error>',
+            400,
+          );
+        }
+        return null;
+      };
+      final first = await small().run([onDisk(video())]);
+      expect(first.single.outcome, UploadOutcome.failed);
+
+      final before = bucket.log.length;
+      final second = await small().run([onDisk(video())]);
+      expect(second.single.outcome, UploadOutcome.uploaded);
+      final sent = bucket.log
+          .skip(before)
+          .where((l) => l.startsWith('PUT v1/o/') && l.contains('.'))
+          .toList();
+      expect(sent, hasLength(4), reason: 'pieces 0-2 were already there');
+    });
+
+    test('a second copy is a duplicate, not another upload', () async {
+      await small().run([onDisk(video())]);
+      final again = await small().run([onDisk(video(), name: 'copy.mp4')]);
+      expect(again.single.outcome, UploadOutcome.duplicate);
+    });
   });
 
   test('large files go up one at a time', () async {

@@ -12,7 +12,9 @@ import '../data/local_db.dart';
 import '../media/image_type.dart';
 import '../s3/s3_client.dart';
 import 'compression_sheet.dart';
+import 'delete_sheet.dart';
 import 'format.dart';
+import 'pdf_view.dart';
 import 'video_view.dart';
 
 class PhotoViewer extends StatefulWidget {
@@ -71,82 +73,79 @@ class _PhotoViewerState extends State<PhotoViewer> {
     }
   }
 
-  Future<void> _saveToPhone([TimelineItem? which]) => _run(
-    'Saved to this phone',
-    () async {
-      final item = which ?? _item;
-      final id = item.photoId;
-      final record = id == null ? null : _session.db.photo(id);
-      if (record == null) return;
-      final bytes = await _session.photos.original(record.id);
-      await _session.gallery.saveToPhone(bytes, record.name, mime: record.mime);
-      await _session.scanGallery();
-    },
-  );
+  Future<void> _saveToPhone([TimelineItem? which]) =>
+      _run('Saved to this phone', () async {
+        final item = which ?? _item;
+        final id = item.photoId;
+        final record = id == null ? null : _session.db.photo(id);
+        if (record == null) return;
+        await _session.saveToPhone(record);
+        await _session.scanGallery();
+      });
 
   Future<void> _backUp() async {
     // One photo, one choice: this is where a keeper gets stored untouched
     // even when the default is set to save space.
     final compression = await chooseCompression(context, _session, count: 1);
     if (compression == null || !mounted) return;
+    final item = _item;
     await _run('Backed up', () async {
       final results = await _session.backUpAssets([
-        _item.assetId!,
+        item.assetId!,
       ], compression: compression);
       final error = results.where((r) => r.error != null).firstOrNull?.error;
       if (error != null) throw Exception(error);
+      final photoId = results.firstOrNull?.photoId;
+      if (photoId == null || !mounted) return;
+      // The page on screen is a snapshot taken when the viewer opened, so it
+      // has to be told; otherwise it offers "Back up" until reopened.
+      final at = _items.indexWhere((i) => i.key == item.key);
+      if (at < 0) return;
+      setState(
+        () => _items[at] = TimelineItem(
+          photoId: photoId,
+          assetId: item.assetId,
+          takenAt: item.takenAt,
+          tzOffsetMinutes: item.tzOffsetMinutes,
+          mime: item.mime,
+          state: BackupState.backedUp,
+        ),
+      );
     });
   }
 
   Future<void> _delete() async {
-    final record = _record;
-    if (record == null) return;
-    final onPhone = _item.assetId != null;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete from Happy Drive?'),
-        content: Text(
-          onPhone
-              ? 'The backup is removed from your storage. The copy on this phone stays.'
-              : 'This photo is only in your storage. Deleting it removes it for good.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    await _run('Deleted from storage', () async {
-      await _session.deletePhotos({record.id});
+    final item = _item;
+    final from = await askWhereToDelete(context, [item]);
+    if (from == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final outcome = await deleteItems(_session, [item], from);
       if (!mounted) return;
-      if (onPhone) {
-        setState(
-          () => _items[_index] = TimelineItem(
-            photoId: null,
-            assetId: _item.assetId,
-            takenAt: _item.takenAt,
-            tzOffsetMinutes: _item.tzOffsetMinutes,
-            mime: _item.mime,
-            state: BackupState.localOnly,
-          ),
-        );
-      } else {
-        setState(() => _items = List.of(_items)..removeAt(_index));
-        if (_items.isEmpty) {
-          Navigator.pop(context);
-        } else {
-          _index = _index.clamp(0, _items.length - 1);
-        }
+      _toast(outcome.message);
+      if (outcome.nothing) return;
+      final after = outcome.apply(item);
+      final at = _items.indexWhere((i) => i.key == item.key);
+      if (at < 0) return;
+      if (after != null) {
+        setState(() => _items[at] = after);
+        return;
       }
-    });
+      setState(() => _items = List.of(_items)..removeAt(at));
+      if (_items.isEmpty) {
+        Navigator.pop(context);
+      } else {
+        _index = _index.clamp(0, _items.length - 1);
+      }
+    } on S3Exception catch (e) {
+      if (mounted) _toast(e.friendly);
+    } on SocketException {
+      if (mounted) _toast('No internet connection.');
+    } catch (e) {
+      if (mounted) _toast('That didn\'t work: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   void _details() => showModalBottomSheet<void>(
@@ -242,12 +241,11 @@ class _PhotoViewerState extends State<PhotoViewer> {
                       label: 'Details',
                       onTap: _details,
                     ),
-                    if (item.photoId != null)
-                      _Action(
-                        icon: Icons.delete_outline,
-                        label: 'Delete',
-                        onTap: _busy ? null : _delete,
-                      ),
+                    _Action(
+                      icon: Icons.delete_outline,
+                      label: 'Delete',
+                      onTap: _busy ? null : _delete,
+                    ),
                   ],
                 ),
               ),
@@ -469,6 +467,14 @@ class _FullImageState extends State<_FullImage> {
         poster: _preview,
         name: _record?.name,
         chromeVisible: widget.chromeVisible,
+        active: widget.active,
+      );
+    }
+    if (item.mime == 'application/pdf') {
+      return PdfView(
+        session: widget.session,
+        item: item,
+        name: _record?.name,
         active: widget.active,
       );
     }

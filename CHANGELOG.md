@@ -1,6 +1,61 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-09-24
+
+### Fixed: an update could leave you in an empty library
+
+The Android test build on GitHub was signed with a debug key from another
+computer, so no later APK could install over it: Android made people uninstall
+first, which wiped the phone's sign-in and library index. On the fresh install
+the connect screen started on **New bucket**, and tapping through it made a
+new, empty library. The photos were never lost (they stay in the old bucket),
+but they were out of sight.
+
+- Before making a new bucket, the app now looks for libraries already in the
+  account and offers to open one. Starting an empty one is still possible, on
+  purpose.
+- The GitHub release now carries the APK signed with Happy Drive's own key,
+  which every later build uses too.
+
+### New: files of any size
+
+Anything over 64 MB, whether a long video, a big PDF or a recording, now goes
+up in 8 MB pieces, each encrypted on its own and bound to its place in the
+file, so pieces can't be reordered or dropped unnoticed. The file is read off
+the disk a piece at a time, so a 2 GB video needs no more memory than a photo.
+A dropped connection resumes from the last piece rather than starting over.
+Playing or saving it downloads and decrypts the pieces straight into a file.
+Files up to 64 MB are stored exactly as before, so older copies of the app
+can still open everything they could. The limit per file is now 16 GB.
+
+### New: delete from Happy Drive, from the phone, or both
+
+Delete, in the viewer or on a selection, asks where from: **Happy Drive**
+(the phone keeps its copy), **this phone** (the backup stays, to free space),
+or **everywhere**. It only offers what applies, and says when something would
+be gone for good. If the phone's own confirmation is declined for some
+photos, their backups are kept too.
+
+### New: read PDFs and play audio in the app
+
+PDFs open page by page, drawn by the phone's own PDF renderer (PdfRenderer on
+Android, Core Graphics on iOS), with pinch to zoom. Audio gets a player of its
+own: name, play and pause, a scrubber and the time.
+
+### New: phone storage in Settings
+
+Under **Manage buckets**, Settings shows how full the phone is, how much of
+that is Happy Drive, and what Happy Drive keeps: its library index,
+thumbnails and temporary files.
+
+### Fixed
+
+- Backing up a single photo from the viewer now shows it as backed up
+  straight away, instead of only after leaving and reopening it.
+- Saving a video from a selection saves it as a video, not as a photo.
+- The delete sheet no longer overflows on short screens.
+
+## 1.1.0 update — 2026-09-24 (TestFlight 202609241204)
 
 ### New: a Files tab for PDFs and audio
 

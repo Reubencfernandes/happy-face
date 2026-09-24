@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -117,6 +118,29 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final client = widget.clientFactory(account);
     try {
       final exists = await client.bucketExists();
+      if (!exists && creating) {
+        // A reinstall wipes this phone's memory of the library, so the
+        // screen starts on "New bucket" — and tapping through it used to
+        // leave people in an empty library, photos safe but out of sight.
+        final libraries = await _librariesIn(client);
+        if (!mounted) return;
+        if (libraries.isNotEmpty) {
+          final choice = await showDialog<String>(
+            context: context,
+            builder: (_) => _ExistingLibraries(names: libraries),
+          );
+          if (choice == null || !mounted) return;
+          if (choice.isNotEmpty) {
+            setState(() {
+              _mode = BucketMode.existing;
+              _existingBucket.text = choice;
+            });
+            // Once this attempt has let go of the form, open that one.
+            unawaited(Future.microtask(_connect));
+            return;
+          }
+        }
+      }
       if (!exists && !creating) {
         // Don't quietly make a bucket the user meant to reuse: a typo would
         // leave them staring at an empty library wondering where it went.
@@ -170,6 +194,17 @@ class _ConnectScreenState extends State<ConnectScreen> {
       client.close();
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// The buckets in this account that already hold a library. Empty when
+  /// there are none, or when Hugging Face won't list them.
+  Future<List<String>> _librariesIn(BucketClient client) async {
+    final names = await client.listBuckets();
+    if (names == null) return const [];
+    return [
+      for (final b in await _withLibraries(names))
+        if (b.hasLibrary ?? false) b.name,
+    ];
   }
 
   /// Lists the account's buckets and marks the ones Happy Drive knows.
@@ -807,4 +842,49 @@ class _HelpSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Asked before making a new bucket in an account that already has a
+/// library. Pops the bucket to open, or '' to make a new one anyway.
+class _ExistingLibraries extends StatelessWidget {
+  final List<String> names;
+  const _ExistingLibraries({required this.names});
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(
+      names.length == 1
+          ? 'You already have a library'
+          : 'You already have ${names.length} libraries',
+    ),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Your photos are still there. Open your library with the same '
+          'passphrase to get them back on this phone.',
+        ),
+        const SizedBox(height: 12),
+        for (final name in names)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.photo_library_outlined),
+            title: Text(name),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.pop(context, name),
+          ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      TextButton(
+        onPressed: () => Navigator.pop(context, ''),
+        child: const Text('Start an empty one'),
+      ),
+    ],
+  );
 }

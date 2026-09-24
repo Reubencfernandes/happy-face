@@ -56,8 +56,13 @@ class MediaCache {
     // The name matters: players pick their decoder from the extension.
     final extension = extensionForMime(item.mime ?? mimeForName(name) ?? '');
     final file = File('${dir.path}/$photoId.$extension');
-    final bytes = await photos.original(photoId, onProgress: onProgress);
-    await file.writeAsBytes(bytes, flush: true);
+    try {
+      await photos.originalToFile(photoId, file, onProgress: onProgress);
+    } catch (_) {
+      // Half a decrypted file is still a readable one.
+      if (await file.exists()) await file.delete();
+      rethrow;
+    }
     return PlayableFile._(file, owned: true);
   }
 

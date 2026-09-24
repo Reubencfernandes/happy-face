@@ -483,6 +483,13 @@ class LocalDb {
     }
   });
 
+  /// Forgets gallery photos that were just deleted from the phone.
+  void removeDeviceAssets(Iterable<String> assetIds) => _tx(() {
+    for (final id in assetIds) {
+      db.execute('DELETE FROM device_assets WHERE asset_id = ?', [id]);
+    }
+  });
+
   /// Forgets gallery photos that are no longer on the phone.
   void removeDeviceAssetsExcept(Set<String> present) => _tx(() {
     final rows = db.select('SELECT asset_id FROM device_assets');

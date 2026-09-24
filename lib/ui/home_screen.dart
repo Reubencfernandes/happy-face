@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
@@ -14,6 +15,7 @@ import '../sync/uploader.dart';
 import 'backup_status.dart';
 import 'calendar_view.dart';
 import 'compression_sheet.dart';
+import 'delete_sheet.dart';
 import 'files_view.dart';
 import 'places_view.dart';
 import 'search_view.dart';
@@ -310,11 +312,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       },
     );
     if (compression == null) return;
-    // Sizes come from the picker when it knows them, so an enormous file is
-    // turned away with a reason rather than read into memory first.
+    // Sizes come from the picker when it knows them, so a big file is read
+    // off the disk in pieces rather than pulled into memory whole.
     final sources = [
       for (final f in files)
-        UploadSource(name: f.name, size: await f.length(), read: f.readAsBytes),
+        UploadSource(
+          name: f.name,
+          size: await f.length(),
+          read: f.readAsBytes,
+          file: () async => f.path == null ? null : File(f.path!),
+        ),
     ];
     await _runBackup(() => _session.backUp(sources, compression: compression));
   }
@@ -333,39 +340,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _deleteSelection() async {
-    final ids = {
-      for (final i in _selection.items.values)
-        if (i.photoId != null) i.photoId!,
-    };
-    final cloudOnly = _selection.items.values
-        .where((i) => i.state == BackupState.cloudOnly)
-        .length;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete ${ids.length} from Happy Drive?'),
-        content: Text(
-          cloudOnly == 0
-              ? 'The backups are removed from your storage. Copies on this phone stay.'
-              : '$cloudOnly of these are only in your storage and will be gone for good.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
+    final items = _selection.items.values.toList();
+    final from = await askWhereToDelete(context, items);
+    if (from == null || !mounted) return;
     _selection.clear();
     try {
-      await _session.deletePhotos(ids);
-      if (mounted) _toast('Deleted ${ids.length} from storage');
+      final outcome = await deleteItems(_session, items, from);
+      if (mounted) _toast(outcome.message);
     } catch (e) {
       if (mounted) _toast('Delete failed: $e');
     }
@@ -382,10 +363,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final record = _session.db.photo(id);
       if (record == null) continue;
       try {
-        await _session.gallery.saveToPhone(
-          await _session.photos.original(id),
-          record.name,
-        );
+        await _session.saveToPhone(record);
         saved++;
       } catch (_) {}
     }
@@ -642,7 +620,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<Widget> _selectionActions() {
     final items = _selection.items.values;
     final canBackUp = items.any((i) => i.state == BackupState.localOnly);
-    final canDelete = items.any((i) => i.photoId != null);
     final canSave = items.any((i) => i.state == BackupState.cloudOnly);
     return [
       if (canBackUp)
@@ -658,12 +635,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           tooltip: 'Save to phone',
           onPressed: _saveSelection,
         ),
-      if (canDelete)
-        _CircleButton(
-          icon: Icons.delete_outline,
-          tooltip: 'Delete from storage',
-          onPressed: _deleteSelection,
-        ),
+      _CircleButton(
+        icon: Icons.delete_outline,
+        tooltip: 'Delete',
+        onPressed: _deleteSelection,
+      ),
       _CircleButton(
         icon: Icons.close_rounded,
         tooltip: 'Done selecting',

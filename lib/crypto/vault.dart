@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -54,6 +55,9 @@ class KdfParams {
 /// associated data, so a thumbnail can't be swapped in for an original.
 class Vault {
   static const _version = 1;
+
+  /// Bytes [seal] adds: a version byte, the nonce and the tag.
+  static const sealOverhead = 1 + _nonceLength + _macLength;
   static const _nonceLength = 12;
   static const _macLength = 16;
   static final _aes = AesGcm.with256bits();
@@ -268,6 +272,41 @@ class Vault {
     return _idFromDigest(digest);
   }
 
+  /// The same id for a file on disk, read a megabyte at a time on another
+  /// isolate, so a multi-gigabyte video is never in memory at once.
+  Future<String> photoIdForFile(String path) async {
+    final digest = await Isolate.run(() {
+      final out = _DigestSink();
+      final input = hash.sha256.startChunkedConversion(out);
+      final file = File(path).openSync();
+      try {
+        final buffer = Uint8List(1 << 20);
+        while (true) {
+          final n = file.readIntoSync(buffer);
+          if (n <= 0) break;
+          input.add(Uint8List.sublistView(buffer, 0, n));
+        }
+      } finally {
+        file.closeSync();
+      }
+      input.close();
+      return out.value!.bytes;
+    });
+    return _idFromDigest(digest);
+  }
+
+  /// The same id computed from pieces handed over one after another, for a
+  /// large file that only exists in memory.
+  String photoIdForChunks(Iterable<List<int>> chunks) {
+    final out = _DigestSink();
+    final input = hash.sha256.startChunkedConversion(out);
+    for (final c in chunks) {
+      input.add(c);
+    }
+    input.close();
+    return _idFromDigest(out.value!.bytes);
+  }
+
   String _idFromDigest(List<int> digest) {
     final mac = hash.Hmac(hash.sha256, _dedupeKey).convert(digest).bytes;
     return mac.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
@@ -293,4 +332,13 @@ class Vault {
     });
     return SecretKey(bytes);
   }
+}
+
+/// Catches the one digest a chunked SHA-256 produces.
+class _DigestSink implements Sink<hash.Digest> {
+  hash.Digest? value;
+  @override
+  void add(hash.Digest data) => value = data;
+  @override
+  void close() {}
 }

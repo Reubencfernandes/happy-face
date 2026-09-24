@@ -132,9 +132,12 @@ class _VideoViewState extends State<VideoView> {
     });
   }
 
+  bool get _isAudio => widget.item.mime?.startsWith('audio/') ?? false;
+
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
+    if (_isAudio) return _audio(context, controller);
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -158,6 +161,67 @@ class _VideoViewState extends State<VideoView> {
           Center(child: _cover(context)),
         ],
         if (controller != null && widget.chromeVisible)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _Controls(controller: controller),
+          ),
+      ],
+    );
+  }
+
+  /// Sound has nothing to look at, so it gets a face of its own: what it's
+  /// called and how long it runs, with the controls always on screen rather
+  /// than hidden with the viewer's chrome.
+  Widget _audio(BuildContext context, VideoPlayerController? controller) {
+    final theme = Theme.of(context);
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Center(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(32, 0, 32, 80),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 148,
+                  height: 148,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        theme.colorScheme.primary,
+                        theme.colorScheme.primary.withValues(alpha: 0.35),
+                      ],
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.graphic_eq_rounded,
+                    size: 72,
+                    color: Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  widget.name ?? 'Audio',
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                if (controller == null) _cover(context),
+              ],
+            ),
+          ),
+        ),
+        if (controller != null)
           Positioned(
             left: 0,
             right: 0,

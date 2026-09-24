@@ -111,6 +111,9 @@ class Gallery {
         }
         return bytes;
       },
+      // The untouched original, as [read] gives, for files too big to read
+      // in one go. On iPhone this can download it from iCloud first.
+      file: () => asset.originFile,
       thumbnail: () => asset.thumbnailDataWithSize(
         const ThumbnailSize.square(400),
         quality: 80,
@@ -124,6 +127,37 @@ class Gallery {
         height: asset.height == 0 ? null : asset.height,
       ),
     );
+  }
+
+  /// Deletes photos and videos from the phone's library. The phone asks the
+  /// person to confirm first (iOS always, Android 11 and later), so this
+  /// returns only the ids that actually went.
+  Future<Set<String>> deleteFromPhone(List<String> assetIds) async {
+    if (assetIds.isEmpty) return const {};
+    final gone = await PhotoManager.editor.deleteWithIds(assetIds);
+    return gone.toSet();
+  }
+
+  /// Like [saveToPhone], from a file on disk rather than bytes in memory.
+  Future<String> saveFileToPhone(
+    File file,
+    String filename, {
+    String? mime,
+  }) async {
+    switch (mediaKindOf(mime)) {
+      case MediaKind.image:
+        await PhotoManager.editor.saveImageWithPath(file.path, title: filename);
+        return 'your photos';
+      case MediaKind.video:
+        await PhotoManager.editor.saveVideo(file, title: filename);
+        return 'your videos';
+      case MediaKind.file:
+        final dir = Platform.isAndroid
+            ? await getExternalStorageDirectory() ??
+                  await getApplicationDocumentsDirectory()
+            : await getApplicationDocumentsDirectory();
+        return (await file.copy('${dir.path}/$filename')).path;
+    }
   }
 
   /// Puts a photo or video back in the phone's library, and anything else

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -28,6 +29,10 @@ class UploadSource {
   final int? size;
   final Future<Uint8List> Function() read;
 
+  /// The file itself, when there is one on disk. A file too big to hold in
+  /// memory is read from here a piece at a time instead of through [read].
+  final Future<File?> Function()? file;
+
   /// A fast thumbnail from the OS, if available.
   final Future<Uint8List?> Function()? thumbnail;
 
@@ -37,6 +42,7 @@ class UploadSource {
   const UploadSource({
     required this.name,
     required this.read,
+    this.file,
     this.assetId,
     this.size,
     this.thumbnail,
@@ -240,6 +246,12 @@ class Uploader {
   final DateTime Function() clock;
   final int concurrency;
 
+  /// Files bigger than this are split into pieces of [partBytes], each its
+  /// own object. At or below it a file is one object, as it always was, so
+  /// an older copy of the app can still open everything it could before.
+  final int singleObjectBytes;
+  final int partBytes;
+
   /// Photos are recorded in the catalogue in batches of this size, which
   /// keeps the journal small without delaying the backup badge too long.
   final int batchSize;
@@ -259,6 +271,8 @@ class Uploader {
     DateTime Function()? clock,
     this.concurrency = 4,
     this.batchSize = 10,
+    this.singleObjectBytes = defaultSingleObjectBytes,
+    this.partBytes = defaultPartBytes,
   }) : clock = clock ?? DateTime.now;
 
   /// Held while a large file is being read, encrypted and sent, so only one
@@ -563,12 +577,48 @@ class Uploader {
     if (source.size case final known? when known > maxUploadBytes) {
       throw FormatException(_tooBig(known));
     }
+    if (source.size case final known? when known > singleObjectBytes) {
+      // Too big to hold: read it off the disk a piece at a time.
+      final file = await source.file?.call();
+      if (file == null) throw FormatException(_noFile(known));
+      final reader = await file.open();
+      try {
+        return await _prepareParts(
+          source,
+          index,
+          inFlight,
+          live,
+          size: known,
+          identify: () => vault.photoIdForFile(file.path),
+          readAt: (offset, length) async {
+            await reader.setPosition(offset);
+            return reader.read(length);
+          },
+        );
+      } finally {
+        await reader.close();
+      }
+    }
     live.phaseIs(UploadPhase.reading);
     final bytes = await source.read();
     live.phaseIs(UploadPhase.preparing);
     // A file whose size wasn't known up front is still checked, late.
     if (bytes.length > maxUploadBytes) {
       throw FormatException(_tooBig(bytes.length));
+    }
+    if (bytes.length > singleObjectBytes) {
+      // Already in memory, so it's too late to save that; but one object
+      // this big is still more than a single request should carry.
+      return _prepareParts(
+        source,
+        index,
+        inFlight,
+        live,
+        size: bytes.length,
+        identify: () => vault.photoIdForAsync(bytes),
+        readAt: (offset, length) async =>
+            Uint8List.sublistView(bytes, offset, offset + length),
+      );
     }
     // Photos, videos and anything else: unknown bytes are stored as they are
     // rather than turned away.
@@ -674,32 +724,137 @@ class Uploader {
     }
   }
 
+  /// A file too big for one object, sent as pieces of [partBytes].
+  ///
+  /// Only one piece is in memory at a time. Pieces already in the bucket
+  /// from an earlier attempt that didn't finish are kept, not sent again,
+  /// so a dropped connection an hour into a long video doesn't start it over.
+  /// Nothing is compressed on this path: it would need the whole file.
+  Future<Object> _prepareParts(
+    UploadSource source,
+    int index,
+    Map<String, Future<bool>> inFlight,
+    _Active live, {
+    required int size,
+    required Future<String> Function() identify,
+    required Future<Uint8List> Function(int offset, int length) readAt,
+  }) async {
+    final assetId = source.assetId;
+    live.phaseIs(UploadPhase.reading);
+    final id = await identify();
+    live.phaseIs(UploadPhase.preparing);
+    if (catalogue.state.records.containsKey(id)) {
+      if (assetId != null) db.markAssetUploaded(assetId, id);
+      return UploadResult(source, UploadOutcome.duplicate, photoId: id);
+    }
+    final other = inFlight[id];
+    if (other != null) return _Duplicate(id, other);
+
+    final staged = _Staged(source, index);
+    inFlight[id] = staged.done.future;
+    try {
+      final mime = sniffMime(
+        await readAt(0, min(size, 4096)),
+        name: source.name,
+      );
+      final thumb = await source.thumbnail?.call();
+      final sealedThumb = thumb == null
+          ? null
+          : await vault.seal(thumb, context: BucketLayout.thumbnail(id));
+      final count = (size + partBytes - 1) ~/ partBytes;
+      if (_cancelled) throw const _Cancelled();
+      live.uploadingBytes(
+        size + count * Vault.sealOverhead + (sealedThumb?.length ?? 0),
+      );
+      for (var i = 0; i < count; i++) {
+        // A long upload can be stopped between pieces. What went up stays,
+        // for the next attempt to pick up from.
+        if (_cancelled) throw const _Cancelled();
+        final offset = i * partBytes;
+        final length = min(partBytes, size - offset);
+        final key = BucketLayout.part(id, i);
+        final sealedLength = length + Vault.sealOverhead;
+        final there = await bucket.headObject(key);
+        if (there != null && there.size == sealedLength) {
+          live.uploaded(sealedLength);
+          continue;
+        }
+        final sealed = await vault.seal(
+          await readAt(offset, length),
+          context: BucketLayout.partContext(id, i, count),
+        );
+        await bucket.putObject(key, sealed, onSent: live.sent);
+        live.uploaded(sealed.length);
+      }
+      if (sealedThumb != null) {
+        await bucket.putObject(
+          BucketLayout.thumbnail(id),
+          sealedThumb,
+          onSent: live.sent,
+        );
+        live.uploaded(sealedThumb.length);
+      }
+      final meta = source.known;
+      staged.record = PhotoRecord(
+        id: id,
+        name: _cleanName(source.name, mime),
+        mime: mime,
+        size: size,
+        width: meta.width,
+        height: meta.height,
+        takenAt: (meta.takenAt ?? clock()).toUtc(),
+        tzOffsetMinutes: meta.tzOffsetMinutes,
+        uploadedAt: clock().toUtc(),
+        lat: meta.lat,
+        lng: meta.lng,
+        parts: count,
+        partSize: partBytes,
+      );
+      return staged;
+    } catch (_) {
+      staged.done.complete(false);
+      rethrow;
+    }
+  }
+
   void _enqueueEnrichment(PhotoRecord r) {
     if (!r.hasLocation) return;
     db.enqueueJob(r.id, JobKind.place);
     db.enqueueJob(r.id, JobKind.weather);
   }
 
-  /// The most one file can be.
+  /// Above this a file goes up in pieces rather than as one object.
   ///
-  /// Not a protocol limit — a memory one. Each upload is a single request, so
-  /// the whole file is held in memory at once, twice over while it is being
-  /// encrypted, and it crosses the platform channel as one allocation on the
-  /// Android heap first. A mid-range phone caps that heap around 384 MB, so a
-  /// 215 MB video kills the app outright. Until uploads are chunked, this is
-  /// the size that survives four workers running at once.
-  static const maxUploadBytes = 64 * 1024 * 1024;
+  /// A single object is read, encrypted and sent whole, so it is held in
+  /// memory at once, twice over while it is encrypted, and it crosses the
+  /// platform channel as one allocation on the Android heap first. A
+  /// mid-range phone caps that heap around 384 MB, so a 215 MB video sent
+  /// that way killed the app. 64 MB was the most that survived; above it,
+  /// the file is read off the disk piece by piece instead.
+  static const defaultSingleObjectBytes = 64 * 1024 * 1024;
+
+  /// How much of a file each piece carries.
+  static const defaultPartBytes = 8 * 1024 * 1024;
+
+  /// The most one file can be. Not a memory limit any more — pieces see to
+  /// that — but a sanity one: a file this size is hours of upload.
+  static const maxUploadBytes = 16 * 1024 * 1024 * 1024;
 
   /// Files at or above this go up one at a time, whatever [concurrency] says,
   /// so four large videos can't be in memory together.
   static const largeFileBytes = 12 * 1024 * 1024;
 
   static String _tooBig(int bytes) =>
-      // Rounded up, not to nearest: a 64.4 MB file rounded down read as
-      // "this file is 64 MB, so 64 MB is the most", which looks like a bug.
-      'This file is ${(bytes / 1024 / 1024).ceil()} MB. Happy Drive uploads '
-      'each file in one go, so ${maxUploadBytes ~/ (1024 * 1024)} MB is the '
-      'most it can handle on a phone.';
+      // Rounded up, not to nearest: a 16.4 GB file rounded down read as
+      // "this file is 16 GB, so 16 GB is the most", which looks like a bug.
+      'This file is ${(bytes / 1024 / 1024).ceil()} MB. '
+      '${maxUploadBytes ~/ (1024 * 1024 * 1024)} GB is the most Happy Drive '
+      'can handle for one file.';
+
+  static String _noFile(int bytes) =>
+      'This file is ${(bytes / 1024 / 1024).ceil()} MB, and the phone '
+      'wouldn\'t hand it over as a file to read in pieces. If it\'s in '
+      'iCloud, download it to the phone first.';
 
   static String _cleanName(String name, String mime) {
     var n = name.trim().isEmpty

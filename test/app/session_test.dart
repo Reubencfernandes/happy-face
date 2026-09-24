@@ -85,6 +85,42 @@ void main() {
     );
   }
 
+  test('deleting a file stored in pieces clears every piece', () async {
+    final client = bucket.client();
+    final session = Session(
+      account: const StoredAccount(
+        namespace: 'reuben',
+        bucket: 'happy-drive',
+        accessKeyId: 'HFAKTEST',
+        secretAccessKey: 's',
+      ),
+      bucket: client,
+      vault: vault,
+      db: LocalDb.inMemory(),
+      photos: PhotoStore(client, vault),
+      credentials: const CredentialStore(),
+      gallery: FakeGallery(0),
+      codec: FakeCodec(),
+      singleObjectBytes: 100,
+      partBytes: 40,
+    );
+    final results = await session.backUp([
+      UploadSource(
+        name: 'long.mp4',
+        read: () async => Uint8List.fromList(List.generate(250, (i) => i)),
+      ),
+    ]);
+    final id = results.single.photoId!;
+    expect(
+      bucket.objects.keys.where((k) => k.startsWith('v1/o/')),
+      hasLength(7),
+    );
+    expect(await session.photos.original(id), List.generate(250, (i) => i));
+
+    await session.deletePhotos({id});
+    expect(bucket.objects.keys.where((k) => k.startsWith('v1/o/')), isEmpty);
+  });
+
   test('backs up a large gallery in batches with overall progress', () async {
     final gallery = FakeGallery(120, gone: {'asset7'});
     final session = sessionWith(gallery);

@@ -1,6 +1,7 @@
 package com.happydrive.app
 
 import android.os.Handler
+import android.os.StatFs
 import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -10,6 +11,10 @@ import java.util.concurrent.Executors
 class MainActivity : FlutterActivity() {
     /** One conversion at a time: they are heavy, and the uploader queues. */
     private val worker = Executors.newSingleThreadExecutor()
+
+    /** PDF pages are drawn on a thread of their own, as PdfRenderer wants. */
+    private val pdfThread = Executors.newSingleThreadExecutor()
+    private val pdf = PdfPages()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -51,5 +56,38 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "happy_drive/device")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "storage" -> {
+                        val stat = StatFs(filesDir.absolutePath)
+                        result.success(mapOf("total" to stat.totalBytes, "free" to stat.availableBytes))
+                    }
+                    "pdfPageCount", "pdfRenderPage", "pdfClose" -> pdfThread.execute {
+                        val reply: Any? = try {
+                            when (call.method) {
+                                "pdfPageCount" -> pdf.pageCount(call.argument<String>("path")!!)
+                                "pdfRenderPage" -> pdf.render(
+                                    call.argument<String>("path")!!,
+                                    call.argument<Int>("page")!!,
+                                    call.argument<Int>("width")!!,
+                                )
+                                else -> { pdf.close(); null }
+                            }
+                        } catch (e: Exception) {
+                            main.post { result.error("pdf", e.message, null) }
+                            return@execute
+                        }
+                        main.post { result.success(reply) }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    override fun onDestroy() {
+        pdfThread.execute { pdf.close() }
+        super.onDestroy()
     }
 }

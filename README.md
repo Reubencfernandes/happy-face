@@ -77,6 +77,10 @@ iOS build yet; that needs macOS and Xcode.
 
 Buckets you no longer want can be deleted from **Settings → Manage buckets**, except the one the phone backs up to.
 
+Files of any size back up: anything over 64 MB goes up in encrypted 8 MB pieces, read off the disk one at a time. Delete asks whether to remove the backup, the phone's copy, or both. PDFs and audio open in the app, and **Settings → Phone storage** shows how much room the phone and Happy Drive are using.
+
+**Reinstalling:** if you reinstall the app, choose **My bucket** (or accept the offer to open your existing library) and enter the same passphrase. Your photos are in your bucket, not on the phone.
+
 ## Running
 
 ```

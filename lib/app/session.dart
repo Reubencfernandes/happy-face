@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as hash;
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../crypto/vault.dart';
@@ -99,7 +100,10 @@ class Session extends ChangeNotifier {
     this.gallery = const Gallery(),
     ImageCodec codec = const NativeImageCodec(),
     FileCodec files = const NativeFileCodec(),
+    int singleObjectBytes = Uploader.defaultSingleObjectBytes,
+    int partBytes = Uploader.defaultPartBytes,
   }) : catalogue = RemoteCatalogue(bucket, vault) {
+    photos.records ??= db.photo;
     _uploader = Uploader(
       bucket: bucket,
       vault: vault,
@@ -107,6 +111,8 @@ class Session extends ChangeNotifier {
       db: db,
       codec: codec,
       files: files,
+      singleObjectBytes: singleObjectBytes,
+      partBytes: partBytes,
     );
   }
 
@@ -492,6 +498,9 @@ class Session extends ChangeNotifier {
   /// Deletes photos from the bucket. Copies on the phone are untouched.
   Future<void> deletePhotos(Set<String> ids) async {
     if (ids.isEmpty) return;
+    // Asked before the catalogue forgets them: a file stored in pieces has
+    // more objects to clear than its original's key.
+    final parts = {for (final id in ids) id: db.photo(id)?.parts};
     final now = DateTime.now().toUtc().millisecondsSinceEpoch;
     final changed = await catalogue.commit([
       for (final id in ids) DeleteOp(id, now),
@@ -501,12 +510,45 @@ class Session extends ChangeNotifier {
     for (final id in ids) {
       await photos.evict(id);
       try {
+        for (var i = 0; i < (parts[id] ?? 0); i++) {
+          await bucket.deleteObject(BucketLayout.part(id, i));
+        }
         await bucket.deleteObject(BucketLayout.original(id));
         await bucket.deleteObject(BucketLayout.thumbnail(id));
       } catch (_) {
         // The catalogue no longer lists it; leftovers can be swept later.
       }
     }
+  }
+
+  /// Puts a backed-up file back on the phone: photos and videos into the
+  /// phone's library, anything else into the app's folder. It goes by way
+  /// of a temporary file, so a long video never has to fit in memory.
+  /// Returns where it landed.
+  Future<String> saveToPhone(PhotoRecord record) async {
+    final dir = Directory('${(await getTemporaryDirectory()).path}/saving');
+    await dir.create(recursive: true);
+    final file = File('${dir.path}/${record.id}_${record.name}');
+    try {
+      await photos.originalToFile(record.id, file);
+      return await gallery.saveFileToPhone(
+        file,
+        record.name,
+        mime: record.mime,
+      );
+    } finally {
+      if (await file.exists()) await file.delete();
+    }
+  }
+
+  /// Deletes photos and videos from the phone's own library; their backups
+  /// stay. Returns the ones the person let go, since the phone asks first.
+  Future<Set<String>> deleteFromPhone(Set<String> assetIds) async {
+    final gone = await gallery.deleteFromPhone(assetIds.toList());
+    if (gone.isEmpty) return gone;
+    db.removeDeviceAssets(gone);
+    _changed();
+    return gone;
   }
 
   /// Records enrichment (place, weather) for many photos in one

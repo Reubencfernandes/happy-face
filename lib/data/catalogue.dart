@@ -24,6 +24,12 @@ class PhotoRecord {
   final double? lat;
   final double? lng;
 
+  /// For a file stored in pieces, how many objects it was split into and
+  /// how many bytes of the file each holds (the last may hold fewer). Null
+  /// for the usual single object.
+  final int? parts;
+  final int? partSize;
+
   /// Enrichment filled in after upload.
   final String? place;
   final String? country;
@@ -42,6 +48,8 @@ class PhotoRecord {
     this.compression = 'original',
     this.lat,
     this.lng,
+    this.parts,
+    this.partSize,
     this.place,
     this.country,
     this.weather,
@@ -66,6 +74,8 @@ class PhotoRecord {
     'comp': compression,
     'lat': ?lat,
     'lng': ?lng,
+    'parts': ?parts,
+    'psz': ?partSize,
     'place': ?place,
     'country': ?country,
     'weather': ?weather,
@@ -90,6 +100,8 @@ class PhotoRecord {
     compression: j['comp'] as String? ?? 'original',
     lat: (j['lat'] as num?)?.toDouble(),
     lng: (j['lng'] as num?)?.toDouble(),
+    parts: j['parts'] as int?,
+    partSize: j['psz'] as int?,
     place: j['place'] as String?,
     country: j['country'] as String?,
     weather: (j['weather'] as Map?)?.cast<String, dynamic>(),

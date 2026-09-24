@@ -160,6 +160,43 @@ void main() {
     );
   });
 
+  testWidgets(
+    'after a reinstall, the old library is offered before a new one',
+    (tester) async {
+      cloud = FakeAccount(buckets: {'old-one'}, withLibrary: {'old-one'});
+      await open(tester);
+      await fillKeys(tester);
+      await nameBucket(tester, 'sunny-otter-482');
+      await connect(tester);
+
+      expect(find.text('You already have a library'), findsOneWidget);
+      expect(cloud.created, isEmpty, reason: 'nothing is made while asking');
+      await tester.tap(find.text('old-one'));
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(cloud.created, isEmpty);
+      expect(connected.single.account.bucket, 'old-one');
+      expect(connected.single.hasLibrary, isTrue);
+    },
+  );
+
+  testWidgets('an empty library can still be started on purpose', (
+    tester,
+  ) async {
+    cloud = FakeAccount(buckets: {'old-one'}, withLibrary: {'old-one'});
+    await open(tester);
+    await fillKeys(tester);
+    await nameBucket(tester, 'sunny-otter-482');
+    await connect(tester);
+    await tester.tap(find.text('Start an empty one'));
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(cloud.created, ['sunny-otter-482']);
+    expect(connected.single.hasLibrary, isFalse);
+  });
+
   testWidgets('an existing bucket is opened rather than made', (tester) async {
     cloud = FakeAccount(buckets: {'old-one'}, withLibrary: {'old-one'});
     await open(tester);
