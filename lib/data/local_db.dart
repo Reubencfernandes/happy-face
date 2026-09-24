@@ -19,6 +19,23 @@ enum TimelineSort { taken, uploaded }
 
 enum TimelineFilter { all, backedUp, localOnly, cloudOnly }
 
+/// The kinds of file that live on the Files tab rather than in the gallery.
+enum FileShelf {
+  pdfs("json_extract(p.json, '\$.mime') = 'application/pdf'"),
+  audio("json_extract(p.json, '\$.mime') LIKE 'audio/%'");
+
+  /// Picks this shelf's files out of `photos p`.
+  final String where;
+  const FileShelf(this.where);
+}
+
+/// A file on the Files tab: where it stands, and its catalogue entry.
+class ShelvedFile {
+  final TimelineItem item;
+  final PhotoRecord record;
+  const ShelvedFile(this.item, this.record);
+}
+
 /// What a timeline cell is holding. Photos have a preview of their own;
 /// videos borrow one from the phone; other files get an icon.
 enum MediaKind { image, video, file }
@@ -326,7 +343,7 @@ class LocalDb {
       "CASE WHEN MIN(d.asset_id) IS NULL THEN 'cloud' "
       "WHEN $stale = 1 THEN 'local' ELSE 'synced' END AS state "
       'FROM photos p LEFT JOIN device_assets d ON d.photo_id = p.id '
-      'WHERE 1=1${range('p.taken_at')}${placeFilter()} '
+      'WHERE 1=1$_notShelved${range('p.taken_at')}${placeFilter()} '
       'GROUP BY p.id HAVING 1=1$stateFilter',
     );
     final placeRequested = country != null || place != null;
@@ -371,6 +388,36 @@ class LocalDb {
         ),
     ];
   }
+
+  /// PDFs and sound have a tab of their own; a grid of document icons
+  /// among the photos helps no one.
+  static final _notShelved = [
+    for (final shelf in FileShelf.values) ' AND NOT (${shelf.where})',
+  ].join();
+
+  /// Everything on one shelf of the Files tab, most recently added first.
+  List<ShelvedFile> files(FileShelf shelf) => [
+    for (final r in db.select(
+      'SELECT p.json, MIN(d.asset_id) AS asset_id FROM photos p '
+      'LEFT JOIN device_assets d ON d.photo_id = p.id '
+      'WHERE ${shelf.where} GROUP BY p.id '
+      'ORDER BY p.uploaded_at DESC, p.id',
+    ))
+      _shelved(_record(r), r['asset_id'] as String?),
+  ];
+
+  static ShelvedFile _shelved(PhotoRecord record, String? assetId) =>
+      ShelvedFile(
+        TimelineItem(
+          photoId: record.id,
+          assetId: assetId,
+          takenAt: record.takenAt,
+          tzOffsetMinutes: record.tzOffsetMinutes,
+          mime: record.mime,
+          state: assetId == null ? BackupState.cloudOnly : BackupState.backedUp,
+        ),
+        record,
+      );
 
   // ---------------------------------------------------------------- search
 

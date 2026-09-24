@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../app/credentials.dart';
+import '../app/password_manager.dart';
 import '../crypto/vault.dart';
 import '../data/bucket_layout.dart';
 import '../s3/s3_client.dart';
@@ -18,6 +19,7 @@ class PassphraseScreen extends StatefulWidget {
   final VoidCallback onBack;
   final BucketClientFactory clientFactory;
   final KdfParams kdfParams;
+  final PasswordManager passwords;
 
   const PassphraseScreen({
     super.key,
@@ -27,6 +29,7 @@ class PassphraseScreen extends StatefulWidget {
     required this.onBack,
     this.clientFactory = defaultBucketClient,
     this.kdfParams = const KdfParams(),
+    this.passwords = const ChannelPasswordManager(),
   });
 
   @override
@@ -39,7 +42,44 @@ class _PassphraseScreenState extends State<PassphraseScreen> {
   final _confirm = TextEditingController();
   late bool _unlock = widget.hasLibrary;
   bool _busy = false, _obscure = true, _understood = false;
+
+  /// The passphrase last saved to the password manager, so the button can
+  /// say it's done until the passphrase is changed.
+  String? _saved;
   String? _error;
+
+  Future<void> _save() async {
+    if (!_form.currentState!.validate()) return;
+    final passphrase = _pass.text;
+    final result = await widget.passwords.save(widget.account, passphrase);
+    if (!mounted) return;
+    switch (result) {
+      case SaveResult.saved:
+        setState(() => _saved = passphrase);
+      case SaveResult.cancelled:
+        break;
+      case SaveResult.unavailable:
+        setState(
+          () => _error =
+              'Couldn\'t reach a password manager on this phone. Write the '
+              'passphrase down instead.',
+        );
+    }
+  }
+
+  Future<void> _useSaved() async {
+    final passphrase = await widget.passwords.load(widget.account);
+    if (!mounted) return;
+    if (passphrase == null) {
+      setState(
+        () =>
+            _error = 'No saved passphrase for ${widget.account.id} was picked.',
+      );
+      return;
+    }
+    _pass.text = passphrase;
+    await _submit();
+  }
 
   @override
   void dispose() {
@@ -175,6 +215,28 @@ class _PassphraseScreenState extends State<PassphraseScreen> {
               validator: (v) =>
                   v == _pass.text ? null : 'The passphrases don\'t match',
             ),
+            if (widget.passwords.available) ...[
+              const SizedBox(height: 12),
+              _saved != null && _saved == _pass.text
+                  ? Row(
+                      children: [
+                        Icon(
+                          Icons.check_circle_rounded,
+                          size: 20,
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text('Saved to Google Password Manager'),
+                        ),
+                      ],
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: _busy ? null : _save,
+                      icon: const Icon(Icons.key_rounded),
+                      label: const Text('Save to Google Password Manager'),
+                    ),
+            ],
             const SizedBox(height: 18),
             Material(
               // A Material (not a decorated box) so the checkbox's ink
@@ -238,6 +300,14 @@ class _PassphraseScreenState extends State<PassphraseScreen> {
             busyLabel: _unlock ? 'Unlocking…' : 'Securing your library…',
             onPressed: _submit,
           ),
+          if (_unlock && widget.passwords.available) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _busy ? null : _useSaved,
+              icon: const Icon(Icons.key_rounded),
+              label: const Text('Use saved passphrase'),
+            ),
+          ],
         ],
       ),
     );

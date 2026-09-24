@@ -327,6 +327,35 @@ void main() {
     BucketClient.validateKey('v1/o/ab/0123abcd');
   });
 
+  test('deleting a bucket addresses the bucket itself', () async {
+    final seen = <String>[];
+    final c = clientWith((r) async {
+      seen.add('${r.method} ${r.url.path}');
+      return http.Response('', seen.length == 1 ? 204 : 404);
+    });
+    await c.deleteBucket();
+    await c.deleteBucket(); // Already gone: still fine.
+    expect(seen, ['DELETE /reuben/happy-drive', 'DELETE /reuben/happy-drive']);
+  });
+
+  test('a bucket with files in it says so when deleted', () async {
+    final c = clientWith(
+      (r) async =>
+          http.Response('<Error><Code>BucketNotEmpty</Code></Error>', 409),
+      retry: RetryPolicy.none,
+    );
+    await expectLater(
+      c.deleteBucket(),
+      throwsA(
+        isA<S3Exception>().having(
+          (e) => e.isBucketNotEmpty,
+          'isBucketNotEmpty',
+          true,
+        ),
+      ),
+    );
+  });
+
   test('auth failures produce a friendly message', () async {
     final c = clientWith(
       (r) async => http.Response(

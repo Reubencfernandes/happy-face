@@ -78,6 +78,7 @@ flutter:
     - assets/places/
     # Screenshots of huggingface.co used by the sign-in help sheet.
     - assets/help/
+    - assets/brand/
 
   # General Sans by Indian Type Foundry, via Fontshare (fontshare.com).
   fonts:

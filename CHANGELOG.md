@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased
+
+### New: a Files tab for PDFs and audio
+
+A fifth tab in the bar keeps PDFs and sound files, with a switch between the
+two. They're listed by name, size and date rather than as a grid of icons, and
+no longer crowd the photo gallery or the calendar. On this tab, **Upload**
+opens a picker for just that kind of file. Audio is picked from Files, not the
+music library, so voice memos and recordings show up on iPhone too.
+
+### New: compression for PDFs and audio
+
+The same Original / High / Balanced choice photos get, with wording for each
+kind of file:
+
+- **Audio** is re-encoded to AAC in an `.m4a` with the phone's own encoder
+  (MediaCodec on Android, AVFoundation on iOS): up to 160 kbps at High, 96 kbps
+  at Balanced, less for mono. A 30-second WAV went from 5.3 MB to 0.3–0.5 MB.
+  Audio above 48 kHz is brought down to 48 kHz on iPhone; Android keeps such
+  files as they are.
+- **PDFs** have the photos inside them re-encoded; text, fonts and drawings are
+  copied byte for byte. Balanced brings scanned pages to about 150 dpi. A PDF
+  that is encrypted, damaged, or has only small pictures is stored untouched.
+
+Either way, a file that wouldn't come out smaller is kept as it was.
+
+### New: delete buckets you don't need
+
+**Settings → Manage buckets** lists every bucket in the account with its size
+and file count, and marks the ones that hold a Happy Drive library. Any of them
+except the one this phone backs up to can be deleted: you type the bucket's
+name to confirm, then its files go first and the bucket after, with a progress
+bar. Keys made from a Read token are told they can't delete.
+
+### New: save the passphrase to Google Password Manager (Android)
+
+Creating a library offers **Save to Google Password Manager** once both entries
+match, and unlocking offers **Use saved passphrase**. It's saved under the
+library's `username/bucket`, so two libraries don't overwrite each other.
+Libraries made before this can use **Settings → Save passphrase**, which checks
+the passphrase against the library before keeping it. iPhone doesn't have this
+yet: iOS only offers to save passwords for apps tied to a website.
+
+### Android release signing
+
+Release APKs are now signed with Happy Drive's own upload key (read from an
+uncommitted `android/key.properties`), not the debug key. A copy installed from
+an earlier debug-signed APK has to be uninstalled once before this one will
+install over it.
+
+### New look
+
+- A new app icon: the cloud climbing out of its drive.
+- The welcome screen's sunrise is now a single grainy arc, peach to orange to
+  red, that rises from the bottom of the screen and keeps rippling gently.
+
 ## 1.1.0 — 2026-09-22
 
 The first build tested on a real phone, which is how most of this was found.

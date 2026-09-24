@@ -8,6 +8,7 @@ import '../data/catalogue.dart';
 import '../data/local_db.dart';
 import '../data/remote_catalogue.dart';
 import '../media/compress.dart';
+import '../media/file_compress.dart';
 import '../media/image_type.dart';
 import '../media/metadata.dart';
 import '../s3/s3_client.dart';
@@ -70,6 +71,10 @@ enum UploadPhase {
   /// Encrypting, and compressing or making a thumbnail if it's a photo.
   preparing,
 
+  /// Re-encoding a sound file or the pictures in a PDF, which takes long
+  /// enough to deserve its own word.
+  compressing,
+
   /// Its bytes are going to the bucket.
   uploading,
 
@@ -105,6 +110,7 @@ class ActiveUpload {
   String get label => switch (phase) {
     UploadPhase.reading => 'Reading',
     UploadPhase.preparing => 'Encrypting',
+    UploadPhase.compressing => 'Compressing',
     UploadPhase.uploading => 'Uploading',
     UploadPhase.saving => 'Saving',
   };
@@ -228,6 +234,9 @@ class Uploader {
   final RemoteCatalogue catalogue;
   final LocalDb db;
   final ImageCodec codec;
+
+  /// Shrinks sound and PDFs, the way [codec] shrinks photos.
+  final FileCodec files;
   final DateTime Function() clock;
   final int concurrency;
 
@@ -246,6 +255,7 @@ class Uploader {
     required this.catalogue,
     required this.db,
     this.codec = const NativeImageCodec(),
+    this.files = const NativeFileCodec(),
     DateTime Function()? clock,
     this.concurrency = 4,
     this.batchSize = 10,
@@ -598,6 +608,21 @@ class Uploader {
           storedMime = 'image/jpeg';
           level = compression;
         }
+      } else if (compression != Compression.original &&
+          FileCodec.handles(mime)) {
+        live.phaseIs(UploadPhase.compressing);
+        final smaller = await files.compress(
+          bytes,
+          mime: mime,
+          name: source.name,
+          level: compression,
+        );
+        if (smaller != null && smaller.bytes.length < bytes.length) {
+          stored = smaller.bytes;
+          storedMime = smaller.mime;
+          level = compression;
+        }
+        live.phaseIs(UploadPhase.preparing);
       }
       // Videos come with a thumbnail from the phone; a file that has none
       // gets an icon in the grid instead.
@@ -681,9 +706,14 @@ class Uploader {
         ? (mime.startsWith('image/') ? 'photo' : 'file')
         : name.trim();
     if (n.length > 200) n = n.substring(n.length - 200);
-    // A compressed HEIC is now a JPEG; keep the name honest.
-    if (mime == 'image/jpeg' &&
-        !RegExp(r'\.jpe?g$', caseSensitive: false).hasMatch(n)) {
+    // A compressed HEIC is now a JPEG, and a compressed WAV an M4A; keep
+    // the name honest.
+    final wanted = switch (mime) {
+      'image/jpeg' => RegExp(r'\.jpe?g$', caseSensitive: false),
+      'audio/mp4' => RegExp(r'\.(m4a|mp4|aac)$', caseSensitive: false),
+      _ => null,
+    };
+    if (wanted != null && !wanted.hasMatch(n)) {
       n = '${n.replaceFirst(RegExp(r'\.[A-Za-z0-9]{1,5}$'), '')}.${extensionForMime(mime)}';
     }
     return n;

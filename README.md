@@ -21,13 +21,17 @@ iOS build yet; that needs macOS and Xcode.
   - Pinch to change density; drag the scrubber to jump by date.
   - Sort by date taken or date uploaded, and filter by backup state.
   - Photos on the phone and in the cloud appear together, with a badge showing which are backed up.
+- **Files:** PDFs and audio have a tab of their own, listed by name, size and
+  date, with an Upload button that picks just that kind of file.
 - **Calendar:** every month as a grid of days, each day wearing one of its
   photos; empty days stay empty, so the gaps show.
 - **Backup:**
   - Photos, videos and any other file — pick them in the grid, import them from
     Files, or back up everything not yet backed up.
   - Upload quality chosen per backup, down to a single photo: Original
-    (default), High or Balanced. Videos and other files are stored untouched.
+    (default), High or Balanced. Audio is re-encoded to AAC and the photos
+    inside PDFs are shrunk, text untouched; videos and other files are stored
+    as they are.
   - Identical photos are stored once, even across phones.
   - Interrupted uploads resume.
   - **Live status:** a bar under the title says how far along the backup is,
@@ -69,6 +73,9 @@ iOS build yet; that needs macOS and Xcode.
 6. **Choose a passphrase.**
    - It encrypts everything. **There is no recovery: forget it and the photos can't be opened.**
    - A new phone needs the same three sign-in values plus the passphrase.
+   - On Android, **Save to Google Password Manager** keeps it there, and **Use saved passphrase** fills it in on a new phone.
+
+Buckets you no longer want can be deleted from **Settings → Manage buckets**, except the one the phone backs up to.
 
 ## Running
 

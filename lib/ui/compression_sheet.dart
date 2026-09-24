@@ -7,6 +7,38 @@ import '../media/compress.dart';
 /// change the default used when Happy Drive doesn't ask.
 enum CompressionPurpose { backup, setDefault }
 
+/// What is being stored, which changes what each level actually does.
+enum CompressionSubject {
+  photos,
+  pdfs,
+  audio;
+
+  String describe(Compression level) => switch ((this, level)) {
+    (photos, _) => level.description,
+    (pdfs, Compression.original) => 'Exactly as saved',
+    (pdfs, Compression.high) =>
+      'Pictures inside re-saved at high quality; text untouched',
+    (pdfs, Compression.balanced) =>
+      'Pictures brought down to screen size; text stays sharp',
+    (audio, Compression.original) => 'Exactly as recorded',
+    (audio, Compression.high) => 'AAC up to 160 kbps; sounds the same, smaller',
+    (audio, Compression.balanced) =>
+      'AAC up to 96 kbps; fine for music, ideal for voice',
+  };
+
+  String one() => switch (this) {
+    photos => 'this photo',
+    pdfs => 'this PDF',
+    audio => 'this recording',
+  };
+
+  String many(int n) => switch (this) {
+    photos => '$n photos',
+    pdfs => '$n PDFs',
+    audio => '$n audio files',
+  };
+}
+
 /// What the sheet came back with.
 class CompressionChoice {
   final Compression level;
@@ -24,6 +56,7 @@ Future<Compression?> chooseCompression(
   BuildContext context,
   Session session, {
   int count = 0,
+  CompressionSubject subject = CompressionSubject.photos,
 }) async {
   final settings = session.settings;
   if (!settings.askQuality) return settings.compression;
@@ -31,6 +64,7 @@ Future<Compression?> chooseCompression(
     context,
     initial: settings.compression,
     count: count,
+    subject: subject,
   );
   if (choice == null) return null;
   if (choice.remember) {
@@ -45,22 +79,29 @@ Future<CompressionChoice?> pickCompression(
   required Compression initial,
   CompressionPurpose purpose = CompressionPurpose.backup,
   int count = 0,
+  CompressionSubject subject = CompressionSubject.photos,
 }) => showModalBottomSheet<CompressionChoice>(
   context: context,
   showDragHandle: true,
   isScrollControlled: true,
-  builder: (context) =>
-      _CompressionSheet(initial: initial, purpose: purpose, count: count),
+  builder: (context) => _CompressionSheet(
+    initial: initial,
+    purpose: purpose,
+    count: count,
+    subject: subject,
+  ),
 );
 
 class _CompressionSheet extends StatefulWidget {
   final Compression initial;
   final CompressionPurpose purpose;
   final int count;
+  final CompressionSubject subject;
   const _CompressionSheet({
     required this.initial,
     required this.purpose,
     required this.count,
+    required this.subject,
   });
 
   @override
@@ -82,15 +123,18 @@ class _CompressionSheetState extends State<_CompressionSheet> {
   String get _title => switch ((_isDefault, widget.count)) {
     (true, _) => 'Default upload quality',
     (_, 0) => 'Upload quality',
-    (_, 1) => 'Back up this photo',
-    (_, final n) => 'Back up $n photos',
+    (_, 1) => 'Back up ${widget.subject.one()}',
+    (_, final n) => 'Back up ${widget.subject.many(n)}',
   };
 
   String get _subtitle => _isDefault
       ? 'Used whenever Happy Drive backs up without asking — including '
             'automatic backups.'
-      : 'Choose how these are stored. Photos already in your storage are '
-            'skipped either way.';
+      : widget.subject == CompressionSubject.photos
+      ? 'Choose how these are stored. Photos already in your storage are '
+            'skipped either way.'
+      : 'Choose how these are stored. Files already in your storage are '
+            'skipped, and a file that wouldn\'t get smaller is kept as it is.';
 
   @override
   Widget build(BuildContext context) {
@@ -139,7 +183,7 @@ class _CompressionSheetState extends State<_CompressionSheet> {
                             ],
                           ],
                         ),
-                        subtitle: Text(c.description),
+                        subtitle: Text(widget.subject.describe(c)),
                       ),
                   ],
                 ),

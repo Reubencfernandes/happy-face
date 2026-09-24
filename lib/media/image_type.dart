@@ -62,6 +62,10 @@ String extensionForMime(String mime) => switch (mime) {
   'audio/ogg' => 'ogg',
   'audio/flac' => 'flac',
   'audio/wav' => 'wav',
+  'audio/aac' => 'aac',
+  'audio/aiff' => 'aiff',
+  'audio/amr' => 'amr',
+  'audio/x-caf' => 'caf',
   'application/pdf' => 'pdf',
   'application/zip' => 'zip',
   'text/plain' => 'txt',
@@ -83,6 +87,11 @@ const _byExtension = {
   'ogg': 'audio/ogg',
   'flac': 'audio/flac',
   'wav': 'audio/wav',
+  'aif': 'audio/aiff',
+  'aiff': 'audio/aiff',
+  'opus': 'audio/ogg',
+  'amr': 'audio/amr',
+  'caf': 'audio/x-caf',
   'pdf': 'application/pdf',
   'zip': 'application/zip',
   'txt': 'text/plain',
@@ -103,11 +112,16 @@ const _byExtension = {
 /// any other file. Sniffing wins over the file name, which can lie; a name
 /// with a known extension is the fallback, and anything else is stored as
 /// plain bytes rather than refused.
-String sniffMime(List<int> bytes, {String? name}) =>
-    sniffImageMime(bytes) ??
-    _sniffOtherMime(bytes) ??
-    mimeForName(name) ??
-    'application/octet-stream';
+String sniffMime(List<int> bytes, {String? name}) {
+  final sniffed = sniffImageMime(bytes) ?? _sniffOtherMime(bytes);
+  final named = mimeForName(name);
+  // An .m4a from a voice recorder is often labelled with the same generic
+  // MP4 brand as a video, and only its name says it is sound.
+  if (sniffed == 'video/mp4' && (named?.startsWith('audio/') ?? false)) {
+    return named!;
+  }
+  return sniffed ?? named ?? 'application/octet-stream';
+}
 
 /// The mime a file name implies, or null when its extension is unknown.
 String? mimeForName(String? name) {
@@ -148,6 +162,19 @@ String? _sniffOtherMime(List<int> bytes) {
     final kind = ascii4(8);
     if (kind == 'AVI ') return 'video/x-msvideo';
     if (kind == 'WAVE') return 'audio/wav';
+  }
+  if (ascii4(0) == 'FORM' && const {'AIFF', 'AIFC'}.contains(ascii4(8))) {
+    return 'audio/aiff';
+  }
+  if (ascii4(0) == 'caff') return 'audio/x-caf';
+  if (startsWith(ascii.encode('#!AMR'))) return 'audio/amr';
+  // An MP3 without a tag starts straight in on a frame.
+  if (bytes.length > 1 && bytes[0] == 0xFF && (bytes[1] & 0xE6) == 0xE2) {
+    return 'audio/mpeg';
+  }
+  // Raw AAC, as some recorders save it: the same sync, with no layer.
+  if (bytes.length > 1 && bytes[0] == 0xFF && (bytes[1] & 0xF6) == 0xF0) {
+    return 'audio/aac';
   }
   if (startsWith(ascii.encode('ID3'))) return 'audio/mpeg';
   if (ascii4(0) == 'OggS') return 'audio/ogg';

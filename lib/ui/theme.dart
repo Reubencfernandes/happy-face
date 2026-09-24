@@ -14,9 +14,7 @@ const inkText = Color(0xFFF5F4F2);
 const inkMuted = Color(0xFF9A9AA2);
 const accent = Color(0xFFF2A33A);
 
-/// The three lights in the welcome screen's sunrise, outside in.
-const glowHaze = Color(0xFFF7E7CE);
-const glowSun = Color(0xFFF2A33A);
+/// The warm orange of the upload button and the PDF badges.
 const glowEmber = Color(0xFFE2662B);
 
 /// General Sans, bundled from assets/fonts in regular (400) and semibold (600).

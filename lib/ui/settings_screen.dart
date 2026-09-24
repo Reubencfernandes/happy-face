@@ -5,12 +5,15 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../app/password_manager.dart';
 import '../app/session.dart';
+import '../crypto/vault.dart';
 import '../data/bucket_layout.dart';
 import '../data/hf_profile.dart';
 import '../data/storage_usage.dart';
 import '../s3/s3_client.dart';
 import '../sync/background.dart';
+import 'buckets_screen.dart';
 import 'compression_sheet.dart';
 import 'format.dart';
 import 'skeleton.dart';
@@ -24,10 +27,12 @@ enum _Visibility { checking, private, public, unknown }
 class SettingsScreen extends StatefulWidget {
   final Session session;
   final VoidCallback onSignOut;
+  final PasswordManager passwords;
   const SettingsScreen({
     super.key,
     required this.session,
     required this.onSignOut,
+    this.passwords = const ChannelPasswordManager(),
   });
 
   @override
@@ -227,6 +232,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (picked != null) _update(() => _settings.compression = picked.level);
   }
 
+  Future<void> _manageBuckets() async {
+    final usage = _usage;
+    if (usage == null) return;
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => BucketsScreen(account: _session.account, usage: usage),
+      ),
+    );
+    if (changed == true && mounted) _measure();
+  }
+
+  /// Asks for the passphrase, checks it really opens this library so a typo
+  /// is never what gets kept, and hands it to the password manager.
+  Future<void> _savePassphrase() async {
+    final passphrase = await showDialog<String>(
+      context: context,
+      builder: (_) => _PassphrasePrompt(
+        check: (text) async {
+          await Vault.unlock(
+            await _session.bucket.getObject(BucketLayout.keys),
+            text,
+          );
+        },
+      ),
+    );
+    if (passphrase == null || !mounted) return;
+    final result = await widget.passwords.save(_session.account, passphrase);
+    if (!mounted) return;
+    final message = switch (result) {
+      SaveResult.saved => 'Passphrase saved to Google Password Manager',
+      SaveResult.cancelled => null,
+      SaveResult.unavailable =>
+        'Couldn\'t reach a password manager on this phone.',
+    };
+    if (message == null) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _signOut() async {
     final ok = await _confirm(
       'Sign out of this phone?',
@@ -296,6 +341,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             error: _usageError,
             onRefresh: _measuring ? null : _measure,
           ),
+          ListTile(
+            leading: const Icon(Icons.inventory_2_outlined),
+            title: const Text('Manage buckets'),
+            subtitle: Text(
+              _usage == null
+                  ? 'Available once your storage has been measured'
+                  : 'Delete buckets you no longer need',
+            ),
+            enabled: _usage != null,
+            onTap: _manageBuckets,
+          ),
           header('Backup'),
           ListTile(
             leading: const Icon(Icons.high_quality_outlined),
@@ -363,6 +419,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
           ),
+          if (widget.passwords.available)
+            ListTile(
+              leading: const Icon(Icons.key_rounded),
+              title: const Text('Save passphrase'),
+              subtitle: const Text('Keep it in Google Password Manager'),
+              onTap: _savePassphrase,
+            ),
           ListTile(
             leading: Icon(Icons.logout, color: theme.colorScheme.error),
             title: Text(
@@ -945,4 +1008,95 @@ class _StorageCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Asks for the library passphrase and won't close on one that doesn't
+/// unlock the library.
+class _PassphrasePrompt extends StatefulWidget {
+  final Future<void> Function(String passphrase) check;
+  const _PassphrasePrompt({required this.check});
+
+  @override
+  State<_PassphrasePrompt> createState() => _PassphrasePromptState();
+}
+
+class _PassphrasePromptState extends State<_PassphrasePrompt> {
+  final _text = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final text = _text.text;
+    if (text.isEmpty) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    String? error;
+    try {
+      await widget.check(text);
+    } on WrongPassphraseException {
+      error = 'That passphrase doesn\'t unlock this library.';
+    } on S3Exception catch (e) {
+      error = e.friendly;
+    } on SocketException {
+      error = 'No internet connection.';
+    } catch (e) {
+      error = 'Something went wrong: $e';
+    }
+    if (!mounted) return;
+    if (error == null) {
+      Navigator.pop(context, text);
+      return;
+    }
+    setState(() {
+      _busy = false;
+      _error = error;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Save your passphrase'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Enter it once more. It\'s checked against your library before '
+          'it\'s saved, so a typo never is.',
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _text,
+          enabled: !_busy,
+          obscureText: true,
+          autofocus: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: InputDecoration(
+            hintText: 'Passphrase',
+            errorText: _error,
+          ),
+          onSubmitted: (_) => _submit(),
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: _busy ? null : () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: _busy ? null : _submit,
+        child: Text(_busy ? 'Checking…' : 'Save'),
+      ),
+    ],
+  );
 }

@@ -7,6 +7,7 @@ import 'package:happy_drive/data/bucket_layout.dart';
 import 'package:happy_drive/data/local_db.dart';
 import 'package:happy_drive/data/remote_catalogue.dart';
 import 'package:happy_drive/media/compress.dart';
+import 'package:happy_drive/media/file_compress.dart';
 import 'package:happy_drive/media/metadata.dart';
 import 'package:happy_drive/sync/uploader.dart';
 import 'package:http/http.dart' as http;
@@ -33,6 +34,27 @@ class FakeCodec implements ImageCodec {
       Uint8List.fromList([0xFF, 0xD8, 0xFF, 7, 7, 7]);
 }
 
+/// Pretends to shrink sound to M4A and PDFs in place, or to fail at it.
+class FakeFileCodec implements FileCodec {
+  final calls = <String>[];
+
+  /// Makes every "smaller" copy bigger instead.
+  bool grow = false;
+
+  @override
+  Future<ShrunkFile?> compress(
+    Uint8List bytes, {
+    required String mime,
+    required String name,
+    required Compression level,
+  }) async {
+    calls.add('$name:${level.name}');
+    final size = grow ? bytes.length * 2 : bytes.length ~/ 3;
+    final out = Uint8List(size)..fillRange(0, size, 5);
+    return ShrunkFile(out, mime.startsWith('audio/') ? 'audio/mp4' : mime);
+  }
+}
+
 Uint8List photoBytes(int seed, {String date = '2025:06:01 10:00:00'}) =>
     jpegWithExif(
       dateTimeOriginal: date,
@@ -56,6 +78,7 @@ void main() {
   late LocalDb db;
   late RemoteCatalogue catalogue;
   late FakeCodec codec;
+  late FakeFileCodec files;
 
   Uploader uploader({int batchSize = 3}) => Uploader(
     bucket: bucket.client(),
@@ -63,6 +86,7 @@ void main() {
     catalogue: catalogue,
     db: db,
     codec: codec,
+    files: files,
     batchSize: batchSize,
     clock: () => DateTime.utc(2026, 9, 15, 12),
   );
@@ -76,6 +100,7 @@ void main() {
     db = LocalDb.inMemory();
     catalogue = RemoteCatalogue(bucket.client(), vault);
     codec = FakeCodec();
+    files = FakeFileCodec();
   });
   tearDown(() => db.close());
 
@@ -237,6 +262,63 @@ void main() {
     ]);
     expect(results[1].error, contains('Not on the phone'));
     expect(failures, 2);
+  });
+
+  test('sound is re-encoded to M4A and PDFs shrunk, when asked', () async {
+    final wav = Uint8List.fromList([
+      ...ascii.encode('RIFF'),
+      0,
+      0,
+      0,
+      0,
+      ...ascii.encode('WAVE'),
+      ...List.filled(3000, 1),
+    ]);
+    final pdf = Uint8List.fromList([
+      ...ascii.encode('%PDF-1.7\n'),
+      ...List.filled(3000, 2),
+    ]);
+    final results = await uploader().run([
+      source('Interview.wav', wav),
+      source('scan.pdf', pdf),
+    ], compression: Compression.balanced);
+    expect(files.calls, ['Interview.wav:balanced', 'scan.pdf:balanced']);
+    final records = catalogue.state.records;
+    final audio = records[results[0].photoId!]!;
+    expect(audio.name, 'Interview.m4a', reason: 'the name follows the format');
+    expect(audio.mime, 'audio/mp4');
+    expect(audio.compression, 'balanced');
+    expect(audio.size, wav.length ~/ 3);
+    final doc = records[results[1].photoId!]!;
+    expect(doc.name, 'scan.pdf');
+    expect(doc.mime, 'application/pdf');
+    expect(doc.compression, 'balanced');
+    // Neither is an image, so the photo codec never saw them.
+    expect(codec.compressions, 0);
+  });
+
+  test('a file compression would make bigger is kept as it was', () async {
+    files.grow = true;
+    final mp3 = Uint8List.fromList([
+      ...ascii.encode('ID3'),
+      ...List.filled(2000, 4),
+    ]);
+    final result = await uploader().run([
+      source('song.mp3', mp3),
+    ], compression: Compression.high);
+    final r = catalogue.state.records[result.single.photoId!]!;
+    expect(r.name, 'song.mp3');
+    expect(r.mime, 'audio/mpeg');
+    expect(r.compression, 'original');
+    expect(r.size, mp3.length);
+  });
+
+  test('Original never touches sound or PDFs', () async {
+    await uploader().run([
+      source('memo.m4a', Uint8List.fromList(List.filled(900, 1))),
+      source('doc.pdf', Uint8List.fromList(ascii.encode('%PDF-1.4 x'))),
+    ]);
+    expect(files.calls, isEmpty);
   });
 
   test('videos and other files are stored as they are', () async {

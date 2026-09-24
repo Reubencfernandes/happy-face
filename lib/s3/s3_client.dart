@@ -18,6 +18,9 @@ class S3Exception implements Exception {
   bool get isNotFound => statusCode == 404;
   bool get isAuth => statusCode == 401 || statusCode == 403;
 
+  /// The bucket still holds objects, so it can't be deleted yet.
+  bool get isBucketNotEmpty => code == 'BucketNotEmpty';
+
   /// A message that is safe and useful to show in the UI.
   String get friendly => switch (statusCode) {
     401 || 403 =>
@@ -140,6 +143,15 @@ class BucketClient {
 
   Future<void> createBucket() async {
     _check(await _send('PUT', _uri()));
+  }
+
+  /// Deletes the bucket itself. S3 refuses while it still holds objects
+  /// (see [S3Exception.isBucketNotEmpty]); one that is already gone counts
+  /// as deleted.
+  Future<void> deleteBucket() async {
+    final r = await _send('DELETE', _uri());
+    if (r.statusCode == 404) return;
+    _check(r);
   }
 
   /// Makes an unsigned listing request. If it succeeds, anyone on the internet

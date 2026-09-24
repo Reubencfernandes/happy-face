@@ -11,6 +11,7 @@ import '../data/catalogue.dart';
 import '../data/local_db.dart';
 import '../data/remote_catalogue.dart';
 import '../media/compress.dart';
+import '../media/file_compress.dart';
 import '../media/gallery.dart';
 import '../media/media_file.dart';
 import '../s3/s3_client.dart';
@@ -97,6 +98,7 @@ class Session extends ChangeNotifier {
     required this.credentials,
     this.gallery = const Gallery(),
     ImageCodec codec = const NativeImageCodec(),
+    FileCodec files = const NativeFileCodec(),
   }) : catalogue = RemoteCatalogue(bucket, vault) {
     _uploader = Uploader(
       bucket: bucket,
@@ -104,6 +106,7 @@ class Session extends ChangeNotifier {
       catalogue: catalogue,
       db: db,
       codec: codec,
+      files: files,
     );
   }
 

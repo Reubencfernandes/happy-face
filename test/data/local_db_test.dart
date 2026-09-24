@@ -54,8 +54,8 @@ void main() {
       rec(
         'a-file',
         DateTime.utc(2025, 1, 1),
-        name: 'tickets.pdf',
-        mime: 'application/pdf',
+        name: 'archive.zip',
+        mime: 'application/zip',
       ),
     );
     db.upsertDeviceAssets([
@@ -79,6 +79,55 @@ void main() {
     // Videos on the phone are known before anything is uploaded.
     expect(kinds['asset:phone-video'], MediaKind.video);
     expect(kinds['asset:phone-photo'], MediaKind.image);
+  });
+
+  test('PDFs and sound live on the Files tab, not in the gallery', () {
+    put(rec('photo', DateTime.utc(2025, 1, 1)));
+    put(
+      rec(
+        'old-pdf',
+        DateTime.utc(2025, 1, 2),
+        uploaded: DateTime.utc(2026, 1, 1),
+        name: 'tickets.pdf',
+        mime: 'application/pdf',
+      ),
+    );
+    put(
+      rec(
+        'new-pdf',
+        DateTime.utc(2025, 1, 3),
+        uploaded: DateTime.utc(2026, 2, 1),
+        name: 'scan.pdf',
+        mime: 'application/pdf',
+      ),
+    );
+    put(
+      rec(
+        'memo',
+        DateTime.utc(2025, 1, 4),
+        name: 'memo.m4a',
+        mime: 'audio/mp4',
+      ),
+    );
+    put(
+      rec(
+        'zip',
+        DateTime.utc(2025, 1, 5),
+        name: 'a.zip',
+        mime: 'application/zip',
+      ),
+    );
+
+    expect(db.timeline().map((i) => i.key), ['zip', 'photo']);
+    // Newest upload first, whenever the file itself is dated.
+    expect(db.files(FileShelf.pdfs).map((f) => f.record.id), [
+      'new-pdf',
+      'old-pdf',
+    ]);
+    final audio = db.files(FileShelf.audio).single;
+    expect(audio.record.name, 'memo.m4a');
+    expect(audio.item.state, BackupState.cloudOnly);
+    expect(audio.item.mime, 'audio/mp4');
   });
 
   test('timeline merges phone and cloud photos, newest first', () {

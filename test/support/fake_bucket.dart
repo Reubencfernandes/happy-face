@@ -18,6 +18,9 @@ class FakeBucket {
   /// When true, unsigned requests may list the bucket (a public bucket).
   bool public;
 
+  /// Set once the bucket itself has been deleted.
+  bool deleted = false;
+
   FakeBucket({this.pageSize = 1000, this.public = false});
 
   static const _prefix = '/reuben/happy-drive';
@@ -48,6 +51,17 @@ class FakeBucket {
     if (key.isEmpty) {
       if (r.method == 'HEAD' || r.method == 'PUT') {
         return http.Response('', 200);
+      }
+      if (r.method == 'DELETE') {
+        // Like S3: a bucket must be emptied before it can go.
+        if (objects.isNotEmpty) {
+          return http.Response(
+            '<Error><Code>BucketNotEmpty</Code></Error>',
+            409,
+          );
+        }
+        deleted = true;
+        return http.Response('', 204);
       }
       return _list(r.url.queryParameters);
     }

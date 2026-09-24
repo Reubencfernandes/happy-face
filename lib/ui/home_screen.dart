@@ -14,6 +14,7 @@ import '../sync/uploader.dart';
 import 'backup_status.dart';
 import 'calendar_view.dart';
 import 'compression_sheet.dart';
+import 'files_view.dart';
 import 'places_view.dart';
 import 'search_view.dart';
 import 'settings_screen.dart';
@@ -34,6 +35,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   late final _enricher = Enricher(widget.session);
   var _tab = 0;
   var _options = const TimelineOptions();
+  var _shelf = FileShelf.pdfs;
+
+  /// Where the Files tab sits in the bar.
+  static const _filesTab = 3;
 
   Session get _session => widget.session;
 
@@ -138,8 +143,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     ),
   );
 
-  Future<Compression?> _pickCompression({int count = 0}) =>
-      chooseCompression(context, _session, count: count);
+  Future<Compression?> _pickCompression({
+    int count = 0,
+    CompressionSubject subject = CompressionSubject.photos,
+  }) => chooseCompression(context, _session, count: count, subject: subject);
 
   Future<void> _openBackupSheet() async {
     final access = _session.galleryAccess;
@@ -262,11 +269,46 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _importFiles() async {
-    // Anything the user points at: photos, videos, PDFs, zips.
-    final files = await FilePicker.pickFiles(type: FileType.any);
+  /// Sound formats the phones can play back, and so can compress.
+  static const _audioExtensions = [
+    'mp3',
+    'm4a',
+    'aac',
+    'wav',
+    'flac',
+    'ogg',
+    'opus',
+    'amr',
+    'aif',
+    'aiff',
+    'caf',
+  ];
+
+  Future<void> _importFiles({FileShelf? shelf}) async {
+    // From the Files tab, only that tab's kind; otherwise anything the user
+    // points at: photos, videos, PDFs, zips.
+    final files = await switch (shelf) {
+      null => FilePicker.pickFiles(type: FileType.any),
+      FileShelf.pdfs => FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['pdf'],
+      ),
+      // Not FileType.audio: on iPhone that opens the music library, which
+      // can't see voice memos or anything saved in Files.
+      FileShelf.audio => FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: _audioExtensions,
+      ),
+    };
     if (files.isEmpty || !mounted) return;
-    final compression = await _pickCompression(count: files.length);
+    final compression = await _pickCompression(
+      count: files.length,
+      subject: switch (shelf) {
+        FileShelf.pdfs => CompressionSubject.pdfs,
+        FileShelf.audio => CompressionSubject.audio,
+        null => CompressionSubject.photos,
+      },
+    );
     if (compression == null) return;
     // Sizes come from the picker when it knows them, so an enormous file is
     // turned away with a reason rather than read into memory first.
@@ -355,7 +397,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String get _title => switch (_tab) {
     1 => 'Calendar',
     2 => 'Places',
-    3 => 'Search',
+    _filesTab => 'Files',
+    4 => 'Search',
     _ => 'Gallery',
   };
 
@@ -467,6 +510,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               session: _session,
                               selection: _selection,
                             ),
+                            FilesView(
+                              session: _session,
+                              shelf: _shelf,
+                              onShelf: (s) => setState(() => _shelf = s),
+                              onAdd: () => _importFiles(shelf: _shelf),
+                            ),
                             SearchView(session: _session),
                           ],
                         ),
@@ -506,6 +555,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ? null
               : uploading
               ? _session.cancelUpload
+              // On the Files tab the button means "add one of these".
+              : _tab == _filesTab
+              ? () => _importFiles(shelf: _shelf)
               : _openBackupSheet,
         );
       },
@@ -872,6 +924,7 @@ class _FloatingNav extends StatelessWidget {
     (Icons.home_outlined, Icons.home_rounded, 'Gallery'),
     (Icons.calendar_today_outlined, Icons.calendar_month_rounded, 'Calendar'),
     (Icons.place_outlined, Icons.place, 'Places'),
+    (Icons.folder_outlined, Icons.folder_rounded, 'Files'),
     (Icons.auto_awesome_outlined, Icons.auto_awesome, 'Search'),
   ];
 

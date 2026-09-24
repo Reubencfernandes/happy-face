@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:happy_drive/crypto/vault.dart';
+import 'package:happy_drive/data/bucket_eraser.dart';
 import 'package:happy_drive/data/bucket_layout.dart';
 import 'package:happy_drive/data/local_db.dart';
 import 'package:happy_drive/data/remote_catalogue.dart';
@@ -178,5 +179,28 @@ void main() {
       bucket.close();
     },
     timeout: const Timeout(Duration(minutes: 5)),
+  );
+
+  test(
+    'a bucket can be emptied and deleted',
+    () async {
+      final name =
+          'happy-drive-erase-${DateTime.now().millisecondsSinceEpoch}';
+      final bucket = BucketClient(
+        namespace: namespace,
+        bucket: name,
+        credentials: S3Credentials(key, secret),
+        endpoint: endpoint,
+      );
+      await bucket.createBucket();
+      for (var i = 0; i < 3; i++) {
+        await bucket.putObject('v1/o/$i', Uint8List.fromList([i, i, i]));
+      }
+      await eraseBucket(bucket);
+      expect(await bucket.bucketExists(), isFalse);
+      print('Created, filled, emptied and deleted $name.');
+      bucket.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 }

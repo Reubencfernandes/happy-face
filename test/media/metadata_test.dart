@@ -140,6 +140,17 @@ void main() {
         reason: 'mp4 video',
       );
       expect(sniffImageMime(ascii.encode('%PDF-1.7')), isNull);
+    });
+
+    test('sound is told apart from video', () {
+      final mp4 = [0, 0, 0, 24, ...ascii.encode('ftypmp42')];
+      // A voice recorder's .m4a often carries a video's generic brand.
+      expect(sniffMime(mp4, name: 'Memo 12.m4a'), 'audio/mp4');
+      expect(sniffMime(mp4, name: 'clip.mp4'), 'video/mp4');
+      expect(sniffMime(ascii.encode('FORM\x00\x00\x00\x00AIFF')), 'audio/aiff');
+      expect(sniffMime([0xFF, 0xFB, 0x90, 0x44]), 'audio/mpeg');
+      expect(sniffMime([0xFF, 0xF1, 0x50, 0x80]), 'audio/aac');
+      expect(sniffMime(ascii.encode('#!AMR\n')), 'audio/amr');
       expect(sniffImageMime([]), isNull);
     });
   });
